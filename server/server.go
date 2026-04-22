@@ -31,7 +31,16 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"crypto"
+	cryptorand "crypto/rand"
+	"crypto/rsa"
+	_ "crypto/sha256" // register SHA256 for crypto.SHA256.New()
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -550,6 +559,45 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			return nil, fmt.Errorf("could not write credentials: %w", err)
 		}
 		scheduledExecutorService.AddJob(tokenJd)
+
+		// Set up additional org-specific token rotators for extra GitHub App installations.
+		// This supports one GitHub App installed in multiple orgs (e.g. auto1-services + wkda).
+		// Format: comma-separated list of GitHub App installation IDs, e.g. "125882175" or "125882175,987654321"
+		// The org name is auto-discovered from the GitHub API using the installation ID.
+		if userConfig.GithubAppAdditionalInstallations != "" {
+			appCreds, ok := githubCredentials.(*github.AppCredentials)
+			if !ok {
+				return nil, fmt.Errorf("--gh-additional-app-installations requires GitHub App credentials (--gh-app-id + --gh-app-key)")
+			}
+			for _, entry := range strings.Split(userConfig.GithubAppAdditionalInstallations, ",") {
+				entry = strings.TrimSpace(entry)
+				if entry == "" {
+					continue
+				}
+				installationID, parseErr := strconv.ParseInt(entry, 10, 64)
+				if parseErr != nil {
+					return nil, fmt.Errorf("invalid installation ID in --gh-additional-app-installations %q: %w", entry, parseErr)
+				}
+				// Auto-discover the GitHub org name from the installation ID.
+				orgName, lookupErr := githubLookupInstallationOrg(appCreds.Hostname, appCreds.AppID, appCreds.Key, installationID)
+				if lookupErr != nil {
+					return nil, fmt.Errorf("looking up GitHub org for installation %d: %w", installationID, lookupErr)
+				}
+				orgCreds := &github.AppCredentials{
+					AppID:          appCreds.AppID,
+					Key:            appCreds.Key,
+					Hostname:       appCreds.Hostname,
+					InstallationID: installationID,
+				}
+				orgRotator := github.NewOrgTokenRotator(logger, orgCreds, userConfig.GithubHostname, "x-access-token", home, orgName+"/")
+				orgJd, orgErr := orgRotator.GenerateJob()
+				if orgErr != nil {
+					return nil, fmt.Errorf("could not write org credentials for %s: %w", orgName, orgErr)
+				}
+				scheduledExecutorService.AddJob(orgJd)
+				logger.Info("registered additional GitHub App installation token rotator for org %s (installation %d)", orgName, installationID)
+			}
+		}
 	}
 
 	if userConfig.GithubUser != "" && userConfig.GithubTokenFile != "" && userConfig.WriteGitCreds {
@@ -1329,6 +1377,78 @@ func (s *Server) GetSSLCertificate(*tls.ClientHelloInfo) (*tls.Certificate, erro
 		s.KeyLastRefreshTime = keyStat.ModTime()
 	}
 	return s.SSLCert, nil
+}
+
+// githubLookupInstallationOrg returns the GitHub account/org login name for the given
+// App installation ID by calling GET /app/installations/{id} with a short-lived JWT.
+// This is used to auto-discover the org name when only an installation ID is provided.
+func githubLookupInstallationOrg(hostname string, appID int64, privateKey []byte, installationID int64) (string, error) {
+	block, _ := pem.Decode(privateKey)
+	if block == nil {
+		return "", fmt.Errorf("failed to decode PEM block from GitHub App private key")
+	}
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		// Try PKCS8 (some tools export in this format)
+		pk, err2 := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err2 != nil {
+			return "", fmt.Errorf("parsing GitHub App private key: %w", err)
+		}
+		var ok bool
+		key, ok = pk.(*rsa.PrivateKey)
+		if !ok {
+			return "", fmt.Errorf("GitHub App private key is not RSA")
+		}
+	}
+
+	now := time.Now().Unix()
+	hdr, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
+	pay, _ := json.Marshal(map[string]interface{}{"iat": now - 60, "exp": now + 600, "iss": fmt.Sprintf("%d", appID)})
+	sigInput := base64.RawURLEncoding.EncodeToString(hdr) + "." + base64.RawURLEncoding.EncodeToString(pay)
+
+	h := crypto.SHA256.New()
+	h.Write([]byte(sigInput))
+	sig, err := rsa.SignPKCS1v15(cryptorand.Reader, key, crypto.SHA256, h.Sum(nil))
+	if err != nil {
+		return "", fmt.Errorf("signing JWT for GitHub App: %w", err)
+	}
+	jwt := sigInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+
+	apiBase := fmt.Sprintf("https://api.%s", hostname)
+	if hostname == "github.com" {
+		apiBase = "https://api.github.com"
+	}
+	apiURL := fmt.Sprintf("%s/app/installations/%d", apiBase, installationID)
+
+	req, err := http.NewRequest("GET", apiURL, nil) // nolint: noctx
+	if err != nil {
+		return "", fmt.Errorf("building GitHub installations request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("calling GitHub installations API: %w", err)
+	}
+	defer resp.Body.Close() // nolint: errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub installations API returned HTTP %d for installation %d", resp.StatusCode, installationID)
+	}
+
+	var body struct {
+		Account struct {
+			Login string `json:"login"`
+		} `json:"account"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("decoding GitHub installations API response: %w", err)
+	}
+	if body.Account.Login == "" {
+		return "", fmt.Errorf("GitHub installations API returned empty account login for installation %d", installationID)
+	}
+	return body.Account.Login, nil
 }
 
 // ParseAtlantisURL parses the user-passed atlantis URL to ensure it is valid
