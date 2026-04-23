@@ -101,7 +101,7 @@ const (
 	GHAppKeyFileFlag                 = "gh-app-key-file"
 	GHAppSlugFlag                    = "gh-app-slug"
 	GHAppInstallationIDFlag          = "gh-app-installation-id"
-	GHAppAdditionalInstallationsFlag = "gh-additional-app-installations"
+	GHAppAdditionalInstallationsFlag = "gh-app-additional-installations"
 	GHOrganizationFlag               = "gh-org"
 	GHWebhookSecretFlag              = "gh-webhook-secret"               // nolint: gosec
 	GHAllowMergeableBypassApply      = "gh-allow-mergeable-bypass-apply" // nolint: gosec
@@ -344,10 +344,9 @@ var stringFlags = map[string]stringFlag{
 		description: "The Github app slug (ie. the URL-friendly name of your GitHub App)",
 	},
 	GHAppAdditionalInstallationsFlag: {
-		description: "Comma-separated list of additional GitHub App installation IDs " +
-			"(e.g. '125882175' or '125882175,987654321'). " +
-			"The GitHub org name is auto-discovered via the GitHub API for each installation. " +
-			"Each installation gets org-specific git URL rewrites so terraform can clone modules " +
+		description: "Comma-separated list of additional GitHub App installations in the format installationID:orgName " +
+			"(e.g. '125882175:my-org' or '125882175:org-one,987654321:org-two'). " +
+			"Each entry gets org-specific git URL rewrites so terraform can clone modules " +
 			"from those orgs using the correct installation token. " +
 			"Requires --write-git-creds and --gh-app-id/--gh-app-key to be set.",
 		defaultValue: "",

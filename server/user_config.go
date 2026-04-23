@@ -66,7 +66,7 @@ type UserConfig struct {
 	GithubAppKeyFile                string `mapstructure:"gh-app-key-file"`
 	GithubAppSlug                   string `mapstructure:"gh-app-slug"`
 	GithubAppInstallationID          int64  `mapstructure:"gh-app-installation-id"`
-	GithubAppAdditionalInstallations string `mapstructure:"gh-additional-app-installations"`
+	GithubAppAdditionalInstallations string `mapstructure:"gh-app-additional-installations"`
 	GithubTeamAllowlist             string `mapstructure:"gh-team-allowlist"`
 	GiteaBaseURL                    string `mapstructure:"gitea-base-url"`
 	GiteaToken                      string `mapstructure:"gitea-token"`
