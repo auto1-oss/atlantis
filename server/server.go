@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -550,6 +551,48 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			return nil, fmt.Errorf("could not write credentials: %w", err)
 		}
 		scheduledExecutorService.AddJob(tokenJd)
+
+		// Set up additional org-specific token rotators for extra GitHub App installations.
+		// This supports one GitHub App installed in multiple orgs.
+		// Format: comma-separated installationID:orgName pairs,
+		// e.g. "125882175:my-org" or "125882175:org-one,987654321:org-two".
+		if userConfig.GithubAppAdditionalInstallations != "" {
+			appCreds, ok := githubCredentials.(*github.AppCredentials)
+			if !ok {
+				return nil, fmt.Errorf("--gh-app-additional-installations requires GitHub App credentials (--gh-app-id + --gh-app-key)")
+			}
+			for _, entry := range strings.Split(userConfig.GithubAppAdditionalInstallations, ",") {
+				entry = strings.TrimSpace(entry)
+				if entry == "" {
+					continue
+				}
+				parts := strings.SplitN(entry, ":", 2)
+				if len(parts) != 2 {
+					return nil, fmt.Errorf("invalid --gh-app-additional-installations entry %q: expected format installationID:orgName", entry)
+				}
+				installationID, parseErr := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+				if parseErr != nil {
+					return nil, fmt.Errorf("invalid installation ID in --gh-app-additional-installations %q: %w", parts[0], parseErr)
+				}
+				orgName := strings.TrimSpace(parts[1])
+				if orgName == "" {
+					return nil, fmt.Errorf("empty org name in --gh-app-additional-installations entry %q", entry)
+				}
+				orgCreds := &github.AppCredentials{
+					AppID:          appCreds.AppID,
+					Key:            appCreds.Key,
+					Hostname:       appCreds.Hostname,
+					InstallationID: installationID,
+				}
+				orgRotator := github.NewOrgTokenRotator(logger, orgCreds, userConfig.GithubHostname, "x-access-token", home, orgName+"/")
+				orgJd, orgErr := orgRotator.GenerateJob()
+				if orgErr != nil {
+					return nil, fmt.Errorf("could not write org credentials for %s: %w", orgName, orgErr)
+				}
+				scheduledExecutorService.AddJob(orgJd)
+				logger.Info("registered additional GitHub App installation token rotator for org %s (installation %d)", orgName, installationID)
+			}
+		}
 	}
 
 	if userConfig.GithubUser != "" && userConfig.GithubTokenFile != "" && userConfig.WriteGitCreds {

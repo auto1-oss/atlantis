@@ -81,6 +81,39 @@ func WriteGitCreds(gitUser string, gitToken string, gitHostname string, home str
 	return nil
 }
 
+// WriteOrgGitCreds writes org-specific git URL rewrites with the installation token embedded
+// directly in the URL. This allows a single GitHub App with multiple installations to provide
+// scoped access per org. The rewrites are written to a dedicated per-org config file and
+// included from ~/.gitconfig via an [include] directive.
+// orgPath is the GitHub org name with trailing slash, e.g. "wkda/".
+func WriteOrgGitCreds(gitUser, gitToken, gitHostname, orgPath, home string, logger logging.SimpleLogging) error {
+	orgName := strings.TrimSuffix(orgPath, "/")
+	orgConfigFile := filepath.Join(home, fmt.Sprintf(".gitconfig-org-%s", orgName))
+
+	// Embed the token directly in the rewrite URL so no .git-credentials lookup is needed.
+	rewriteURL := fmt.Sprintf("https://%s:%s@%s/%s", gitUser, gitToken, gitHostname, orgPath) // nolint: gosec
+	content := fmt.Sprintf("[url %q]\n\tinsteadOf = ssh://git@%s/%s\n\tinsteadOf = https://%s/%s\n",
+		rewriteURL, gitHostname, orgPath, gitHostname, orgPath)
+
+	if err := os.WriteFile(orgConfigFile, []byte(content), 0600); err != nil {
+		return fmt.Errorf("writing org git config for %s: %w", orgName, err)
+	}
+	logger.Debug("refreshed org git credentials for %s", orgConfigFile)
+
+	// Ensure ~/.gitconfig includes the org config file (add once).
+	getCmd := exec.Command("git", "config", "--global", "--get-all", "include.path") // nolint: gosec
+	out, _ := getCmd.Output()
+	if !strings.Contains(string(out), orgConfigFile) {
+		addCmd := exec.Command("git", "config", "--global", "--add", "include.path", orgConfigFile) // nolint: gosec
+		if addOut, err := addCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("adding include.path for %s: %s: %w", orgConfigFile, string(addOut), err)
+		}
+		logger.Info("added include.path for org %s (%s)", orgName, orgConfigFile)
+	}
+
+	return nil
+}
+
 func fileHasLine(line string, filename string) (bool, error) {
 	currContents, err := os.ReadFile(filename) // nolint: gosec
 	if err != nil {
