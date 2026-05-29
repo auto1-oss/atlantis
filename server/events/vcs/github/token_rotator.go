@@ -24,6 +24,11 @@ type tokenRotator struct {
 	githubHostname    string
 	gitUser           string
 	homeDirPath       string
+	// orgPath is optional. When set (e.g. "wkda/"), the rotator writes org-specific
+	// git URL rewrites with the token embedded directly in the URL, rather than the
+	// global catch-all rewrite written by the default rotator. This allows a single
+	// GitHub App with multiple installations to serve different orgs correctly.
+	orgPath string
 }
 
 func NewTokenRotator(
@@ -39,6 +44,28 @@ func NewTokenRotator(
 		githubHostname:    githubHostname,
 		gitUser:           gitUser,
 		homeDirPath:       homeDirPath,
+	}
+}
+
+// NewOrgTokenRotator creates a token rotator that writes org-specific git URL rewrites
+// instead of the global catch-all rewrite. orgPath is the GitHub org name with a trailing
+// slash, e.g. "wkda/". Git's longest-match rule ensures the org-specific rewrite takes
+// precedence over the global rewrite set by the default token rotator.
+func NewOrgTokenRotator(
+	log logging.SimpleLogging,
+	githubCredentials Credentials,
+	githubHostname string,
+	gitUser string,
+	homeDirPath string,
+	orgPath string) TokenRotator {
+
+	return &tokenRotator{
+		log:               log,
+		githubCredentials: githubCredentials,
+		githubHostname:    githubHostname,
+		gitUser:           gitUser,
+		homeDirPath:       homeDirPath,
+		orgPath:           orgPath,
 	}
 }
 
@@ -69,6 +96,15 @@ func (r *tokenRotator) rotate() error {
 		return fmt.Errorf("getting github token: %w", err)
 	}
 	r.log.Debug("Token successfully refreshed")
+
+	if r.orgPath != "" {
+		// Write org-specific URL rewrite with token embedded in URL.
+		// Uses a per-org include file so rotations cleanly overwrite only that org's entry.
+		if err := common.WriteOrgGitCreds(r.gitUser, token, r.githubHostname, r.orgPath, r.homeDirPath, r.log); err != nil {
+			return fmt.Errorf("writing org git credentials for %s: %w", r.orgPath, err)
+		}
+		return nil
+	}
 
 	// https://developer.github.com/apps/building-github-apps/authenticating-with-github-apps/#http-based-git-access-by-an-installation
 	if err := common.WriteGitCreds(r.gitUser, token, r.githubHostname, r.homeDirPath, r.log, true); err != nil {
