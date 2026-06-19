@@ -1076,6 +1076,10 @@ func (s *ServerCmd) validate(userConfig server.UserConfig) error {
 			return vcsErr
 		}
 	}
+	if userConfig.GithubAppAdditionalInstallations != "" && userConfig.GithubAppInstallationID == 0 {
+		return fmt.Errorf("--%s requires --%s to be set; when the app is installed in multiple orgs, auto-detection cannot select the primary installation",
+			GHAppAdditionalInstallationsFlag, GHAppInstallationIDFlag)
+	}
 	// At this point, we know that there can't be a single user/token without
 	// its partner, but we haven't checked if any user/token is set at all.
 	if userConfig.GithubAppID == 0 && userConfig.GithubUser == "" && userConfig.GiteaUser == "" && userConfig.GitlabUser == "" && userConfig.BitbucketUser == "" && userConfig.AzureDevopsUser == "" {

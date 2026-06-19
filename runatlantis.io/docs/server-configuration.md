@@ -653,6 +653,18 @@ ATLANTIS_GH_ALLOW_MERGEABLE_BYPASS_APPLY=true
 
 Feature flag to enable ability to use `mergeable` mode with required apply status check.
 
+### `--gh-app-additional-installations`
+
+```bash
+atlantis server --gh-app-additional-installations="125882175:my-org,987654321:other-org"
+# or
+ATLANTIS_GH_APP_ADDITIONAL_INSTALLATIONS="125882175:my-org,987654321:other-org"
+```
+
+A comma-separated list of additional GitHub App installations for supporting a single GitHub App installed in multiple organizations. Each entry is in the format `installationID:orgName`. When set, Atlantis writes org-specific git URL rewrites so Terraform can clone private modules from each org using the correct installation token.
+
+Requires `--write-git-creds`, `--gh-app-id`, and `--gh-app-key` (or `--gh-app-key-file`) to be set. Since the app is installed in multiple organizations, `--gh-app-installation-id` must also be set to explicitly identify the primary installation.
+
 ### `--gh-app-id` <Badge text="v0.20.0+" type="info"/>
 
 ```bash
