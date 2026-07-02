@@ -10,15 +10,60 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/runatlantis/atlantis/server/logging"
 )
+
+// gitConfigMu serializes all mutations of shared global git state (~/.gitconfig,
+// ~/.git-credentials, and per-org include files). The primary token rotator and every
+// additional org rotator run in their own goroutine on a 30s ticker (see
+// scheduled.ExecutorService), and all invoke WriteGitCreds/WriteOrgGitCreds which run
+// `git config --global ...` against the same ~/.gitconfig. Without this lock, concurrent
+// `git config` invocations contend on ~/.gitconfig.lock (dropping include.path entries) and
+// the ~/.git-credentials read-modify-write races, which intermittently leaves the wrong
+// installation token active for a clone.
+var gitConfigMu sync.Mutex
+
+// atomicWriteFile writes data to path atomically by writing to a temp file in the same
+// directory and renaming it into place. Concurrent readers (e.g. parallel `terraform init`
+// module clones reading git config) therefore always observe either the complete old file
+// or the complete new file, never a truncated/partial write.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	// Best-effort cleanup if we bail before the rename succeeds.
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp file %s: %w", tmpName, err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp file %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("renaming %s to %s: %w", tmpName, path, err)
+	}
+	return nil
+}
 
 // WriteGitCreds generates a .git-credentials file containing the username and token
 // used for authenticating with git over HTTPS
 // It will create the file in home/.git-credentials
 // If ghAccessToken is true we will look for a line starting with https://x-access-token and ending with gitHostname and replace it.
 func WriteGitCreds(gitUser string, gitToken string, gitHostname string, home string, logger logging.SimpleLogging, ghAccessToken bool) error {
+	gitConfigMu.Lock()
+	defer gitConfigMu.Unlock()
+
 	const credsFilename = ".git-credentials"
 	credsFile := filepath.Join(home, credsFilename)
 	credsFileContentsPattern := `https://%s:%s@%s` // nolint: gosec
@@ -26,7 +71,7 @@ func WriteGitCreds(gitUser string, gitToken string, gitHostname string, home str
 
 	// If the file doesn't exist, write it.
 	if _, err := os.Stat(credsFile); err != nil {
-		if err := os.WriteFile(credsFile, []byte(config), 0600); err != nil {
+		if err := atomicWriteFile(credsFile, []byte(config), 0600); err != nil {
 			return fmt.Errorf("writing generated %s file with user, token and hostname to %s: %w", credsFilename, credsFile, err)
 		}
 		logger.Info("wrote git credentials to %s", credsFile)
@@ -87,6 +132,9 @@ func WriteGitCreds(gitUser string, gitToken string, gitHostname string, home str
 // included from ~/.gitconfig via an [include] directive.
 // orgPath is the GitHub org name with trailing slash, e.g. "wkda/".
 func WriteOrgGitCreds(gitUser, gitToken, gitHostname, orgPath, home string, logger logging.SimpleLogging) error {
+	gitConfigMu.Lock()
+	defer gitConfigMu.Unlock()
+
 	orgName := strings.TrimSuffix(orgPath, "/")
 	orgConfigFile := filepath.Join(home, fmt.Sprintf(".gitconfig-org-%s", orgName))
 
@@ -95,7 +143,14 @@ func WriteOrgGitCreds(gitUser, gitToken, gitHostname, orgPath, home string, logg
 	content := fmt.Sprintf("[url %q]\n\tinsteadOf = ssh://git@%s/%s\n\tinsteadOf = https://%s/%s\n",
 		rewriteURL, gitHostname, orgPath, gitHostname, orgPath)
 
-	if err := os.WriteFile(orgConfigFile, []byte(content), 0600); err != nil {
+	// Skip the rewrite when nothing changed (the installation token is typically unchanged
+	// between 30s rotations), to avoid needless churn on the shared config file.
+	if existing, err := os.ReadFile(orgConfigFile); err == nil && string(existing) == content {
+		logger.Debug("org git credentials for %s unchanged, not modifying", orgConfigFile)
+		return nil
+	}
+
+	if err := atomicWriteFile(orgConfigFile, []byte(content), 0600); err != nil {
 		return fmt.Errorf("writing org git config for %s: %w", orgName, err)
 	}
 	logger.Debug("refreshed org git credentials for %s", orgConfigFile)
@@ -130,7 +185,7 @@ func fileAppend(line string, filename string) error {
 	if len(currContents) > 0 && !strings.HasSuffix(string(currContents), "\n") {
 		line = "\n" + line
 	}
-	return os.WriteFile(filename, []byte(string(currContents)+line), 0600) // #nosec G703 -- filename comes from trusted caller-supplied $HOME path
+	return atomicWriteFile(filename, []byte(string(currContents)+line), 0600) // #nosec G703 -- filename comes from trusted caller-supplied $HOME path
 }
 
 func fileLineReplace(line, user, host, filename string) error {
@@ -154,7 +209,7 @@ func fileLineReplace(line, user, host, filename string) error {
 		return fileAppend(line, filename)
 	}
 
-	return os.WriteFile(filename, []byte(toWrite), 0600) // #nosec G703 -- filename comes from trusted caller-supplied $HOME path
+	return atomicWriteFile(filename, []byte(toWrite), 0600) // #nosec G703 -- filename comes from trusted caller-supplied $HOME path
 }
 
 func fileHasGHToken(user, host, filename string) (bool, error) {
