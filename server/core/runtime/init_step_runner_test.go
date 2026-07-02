@@ -390,6 +390,115 @@ func TestRun_InitDeletesLockFileIfPresentAndNotTracked(t *testing.T) {
 	terraform.VerifyWasCalledOnce().RunCommandWithVersion(ctx, repoDir, expectedArgs, map[string]string(nil), tfDistribution, tfVersion, "workspace")
 }
 
+func TestIsRetryableInitError(t *testing.T) {
+	cases := []struct {
+		name     string
+		output   string
+		expected bool
+	}{
+		{"repository not found", "remote: Repository not found.\nfatal: repository not found", true},
+		{"exit status 128", "git exited with exit status 128", true},
+		{"could not read Username", "could not read Username for 'https://github.com'", true},
+		{"failed to download module", "Error: Failed to download module", true},
+		{"normal error", "Error: Could not satisfy plugin requirements", false},
+		{"empty output", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := runtime.IsRetryableInitError(c.output)
+			Equals(t, c.expected, got)
+		})
+	}
+}
+
+func TestInitStepRunner_RetriesOnTransientGitError(t *testing.T) {
+	RegisterMockTestingT(t)
+	mockDownloader := mocks.NewMockDownloader()
+	tfDistribution := tf.NewDistributionTerraformWithDownloader(mockDownloader)
+	tfVersion, _ := version.NewVersion("1.5.0")
+
+	repoDir := initRepo(t)
+
+	terraform := tfclientmocks.NewMockClient()
+
+	logger := logging.NewNoopLogger(t)
+	ctx := command.ProjectContext{
+		Workspace:  "workspace",
+		RepoRelDir: ".",
+		Log:        logger,
+	}
+
+	initErr := errors.New("exit status 1")
+	gitErrOutput := `Initializing the backend...
+Error: Failed to download module
+
+  on main.tf line 1:
+   1: module "my-module" {
+
+Could not download module source code from
+"git::ssh://git@github.com/myorg/my-module.git":
+/usr/bin/git exited with 128: Cloning into '.terraform/modules/my-module'...
+remote: Repository not found.
+fatal: repository 'https://github.com/myorg/my-module.git/' not found`
+
+	// First call fails with retryable error, second call succeeds
+	When(terraform.RunCommandWithVersion(Any[command.ProjectContext](), Any[string](), Any[[]string](), Any[map[string]string](), Any[tf.Distribution](), Any[*version.Version](), Any[string]())).
+		ThenReturn(gitErrOutput, initErr).
+		ThenReturn("Terraform has been successfully initialized!", nil)
+
+	iso := runtime.InitStepRunner{
+		TerraformExecutor:     terraform,
+		DefaultTFDistribution: tfDistribution,
+		DefaultTFVersion:      tfVersion,
+	}
+
+	output, err := iso.Run(ctx, nil, repoDir, map[string]string(nil))
+	Ok(t, err)
+	Equals(t, "", output)
+
+	// Should have been called twice: initial attempt + 1 retry
+	terraform.VerifyWasCalled(AtLeast(2)).RunCommandWithVersion(Any[command.ProjectContext](), Any[string](), Any[[]string](), Any[map[string]string](), Any[tf.Distribution](), Any[*version.Version](), Any[string]())
+}
+
+func TestInitStepRunner_NoRetryOnNonTransientError(t *testing.T) {
+	RegisterMockTestingT(t)
+	mockDownloader := mocks.NewMockDownloader()
+	tfDistribution := tf.NewDistributionTerraformWithDownloader(mockDownloader)
+	tfVersion, _ := version.NewVersion("1.5.0")
+
+	repoDir := initRepo(t)
+
+	terraform := tfclientmocks.NewMockClient()
+
+	logger := logging.NewNoopLogger(t)
+	ctx := command.ProjectContext{
+		Workspace:  "workspace",
+		RepoRelDir: ".",
+		Log:        logger,
+	}
+
+	initErr := errors.New("exit status 1")
+	normalErrOutput := `Error: Could not satisfy plugin requirements
+
+Provider "registry.terraform.io/hashicorp/aws" v4.0.0 is not available.`
+
+	When(terraform.RunCommandWithVersion(Any[command.ProjectContext](), Any[string](), Any[[]string](), Any[map[string]string](), Any[tf.Distribution](), Any[*version.Version](), Any[string]())).
+		ThenReturn(normalErrOutput, initErr)
+
+	iso := runtime.InitStepRunner{
+		TerraformExecutor:     terraform,
+		DefaultTFDistribution: tfDistribution,
+		DefaultTFVersion:      tfVersion,
+	}
+
+	output, err := iso.Run(ctx, nil, repoDir, map[string]string(nil))
+	Assert(t, err != nil, "expected error")
+	Assert(t, output != "", "expected error output")
+
+	// Should only be called once — no retries for non-transient errors
+	terraform.VerifyWasCalledOnce().RunCommandWithVersion(Any[command.ProjectContext](), Any[string](), Any[[]string](), Any[map[string]string](), Any[tf.Distribution](), Any[*version.Version](), Any[string]())
+}
+
 func runCmd(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 	cpCmd := exec.Command(name, args...)

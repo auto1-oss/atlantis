@@ -4,13 +4,33 @@
 package runtime
 
 import (
+	"math/rand/v2"
 	"path/filepath"
+	"strings"
+	"time"
 
 	version "github.com/hashicorp/go-version"
 	"github.com/runatlantis/atlantis/server/core/runtime/common"
 	"github.com/runatlantis/atlantis/server/core/terraform"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/utils"
+)
+
+const (
+	// defaultInitRetryMax is the default number of retries when terraform init
+	// fails due to transient git clone errors. GitHub rate-limits concurrent
+	// installation-token clones and returns HTTP 404 ("Repository not found").
+	// With parallel plans (e.g. pool=10), many workers clone the same private
+	// module repo at once, triggering this limit. Retries with jittered backoff
+	// let the burst subside.
+	defaultInitRetryMax = 5
+
+	// initRetryBaseDelay is the base delay for the first retry. Each subsequent
+	// retry doubles the delay (capped at initRetryMaxDelay) and adds jitter.
+	initRetryBaseDelay = 5 * time.Second
+
+	// initRetryMaxDelay caps the per-retry backoff to avoid excessively long waits.
+	initRetryMaxDelay = 60 * time.Second
 )
 
 // InitStep runs `terraform init`.
@@ -67,10 +87,92 @@ func (i *InitStepRunner) Run(ctx command.ProjectContext, extraArgs []string, pat
 	terraformInitCmd := append(terraformInitVerb, finalArgs...)
 
 	out, err := i.TerraformExecutor.RunCommandWithVersion(ctx, path, terraformInitCmd, envs, tfDistribution, tfVersion, ctx.Workspace)
+	if err != nil {
+		if IsRetryableInitError(out) {
+			out, err = i.retryInit(ctx, path, terraformInitCmd, envs, tfDistribution, tfVersion, out)
+		}
+		if err != nil {
+			return out, err
+		}
+	}
 	// Only include the init output if there was an error. Otherwise it's
 	// unnecessary and lengthens the comment.
-	if err != nil {
-		return out, err
-	}
 	return "", nil
+}
+
+// retryInit retries terraform init with jittered exponential backoff when the
+// initial attempt fails with a transient git clone error. Returns the output
+// and error from the last attempt.
+func (i *InitStepRunner) retryInit(
+	ctx command.ProjectContext,
+	path string,
+	args []string,
+	envs map[string]string,
+	d terraform.Distribution,
+	v *version.Version,
+	lastOutput string,
+) (string, error) {
+	var lastErr error
+	delay := initRetryBaseDelay
+
+	for attempt := 1; attempt <= defaultInitRetryMax; attempt++ {
+		// Add jitter: ±50% of the current delay
+		jitter := time.Duration(rand.Int64N(int64(delay))) - delay/2
+		sleepDur := delay + jitter
+		if sleepDur < time.Second {
+			sleepDur = time.Second
+		}
+
+		ctx.Log.Warn("terraform init failed with transient git error, retrying in %s (attempt %d/%d)",
+			sleepDur, attempt, defaultInitRetryMax)
+		time.Sleep(sleepDur)
+
+		out, err := i.TerraformExecutor.RunCommandWithVersion(ctx, path, args, envs, d, v, ctx.Workspace)
+		if err == nil {
+			ctx.Log.Info("terraform init succeeded on retry attempt %d/%d", attempt, defaultInitRetryMax)
+			return "", nil
+		}
+
+		lastOutput = out
+		lastErr = err
+
+		if !IsRetryableInitError(out) {
+			// Non-retryable error — bail out immediately
+			ctx.Log.Warn("terraform init retry %d/%d failed with non-retryable error, giving up", attempt, defaultInitRetryMax)
+			return lastOutput, lastErr
+		}
+
+		// Exponential backoff, capped
+		delay *= 2
+		if delay > initRetryMaxDelay {
+			delay = initRetryMaxDelay
+		}
+	}
+
+	ctx.Log.Warn("terraform init failed after %d retries", defaultInitRetryMax)
+	return lastOutput, lastErr
+}
+
+// IsRetryableInitError checks whether the terraform init output contains error
+// patterns that are known to be transient and worth retrying. The primary case
+// is GitHub returning HTTP 404 ("Repository not found") when too many concurrent
+// clones hit the same repo using a GitHub App installation token.
+func IsRetryableInitError(output string) bool {
+	retryablePatterns := []string{
+		// GitHub returns 404 for private/internal repos when the installation
+		// token is rate-limited on concurrent clones.
+		"Repository not found",
+		// Generic git authentication failure that can be transient.
+		"could not read Username",
+		// Git clone exit code 128 covers various transient failures.
+		"exit status 128",
+		// Terraform module download wrapper error.
+		"Failed to download module",
+	}
+	for _, pattern := range retryablePatterns {
+		if strings.Contains(output, pattern) {
+			return true
+		}
+	}
+	return false
 }
