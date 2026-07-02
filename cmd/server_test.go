@@ -90,6 +90,7 @@ var testFlags = map[string]any{
 	GHAppKeyFileFlag:                 "",
 	GHAppSlugFlag:                    "atlantis",
 	GHAppInstallationIDFlag:          int64(0),
+	GHAppAdditionalInstallationsFlag: "",
 	GHOrganizationFlag:               "",
 	GHWebhookSecretFlag:              "secret",
 	GiteaBaseURLFlag:                 "http://localhost",
@@ -884,6 +885,56 @@ func TestExecute_GithubAppWithInstallationID(t *testing.T) {
 
 	Equals(t, int64(1), passedConfig.GithubAppID)
 	Equals(t, int64(2), passedConfig.GithubAppInstallationID)
+}
+
+func TestExecute_ValidateGHAppAdditionalInstallations(t *testing.T) {
+	cases := []struct {
+		description string
+		flags       map[string]any
+		expectError bool
+		expErr      string
+	}{
+		{
+			description: "additional installations without installation ID should fail",
+			flags: map[string]any{
+				GHAppIDFlag:                      "1",
+				GHAppKeyFlag:                     githubtestdata.PrivateKey,
+				GHAppAdditionalInstallationsFlag: "999999:other-org",
+			},
+			expectError: true,
+			expErr:      "--gh-app-additional-installations requires --gh-app-installation-id to be set; when the app is installed in multiple orgs, auto-detection cannot select the primary installation",
+		},
+		{
+			description: "additional installations with installation ID should succeed",
+			flags: map[string]any{
+				GHAppIDFlag:                      "1",
+				GHAppKeyFlag:                     githubtestdata.PrivateKey,
+				GHAppInstallationIDFlag:          "123456",
+				GHAppAdditionalInstallationsFlag: "999999:other-org",
+			},
+			expectError: false,
+		},
+		{
+			description: "no additional installations without installation ID should succeed",
+			flags: map[string]any{
+				GHAppIDFlag:  "1",
+				GHAppKeyFlag: githubtestdata.PrivateKey,
+			},
+			expectError: false,
+		},
+	}
+	for _, testCase := range cases {
+		t.Log("Should validate gh-app-additional-installations when " + testCase.description)
+		testCase.flags[RepoAllowlistFlag] = "*"
+		c := setup(testCase.flags, t)
+		err := c.Execute()
+		if testCase.expectError {
+			Assert(t, err != nil, "should be an error")
+			ErrEquals(t, testCase.expErr, err)
+		} else {
+			Ok(t, err)
+		}
+	}
 }
 
 func TestExecute_GiteaUser(t *testing.T) {
