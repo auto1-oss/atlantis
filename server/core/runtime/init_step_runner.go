@@ -22,15 +22,17 @@ const (
 	// installation-token clones and returns HTTP 404 ("Repository not found").
 	// With parallel plans (e.g. pool=10), many workers clone the same private
 	// module repo at once, triggering this limit. Retries with jittered backoff
-	// let the burst subside.
-	defaultInitRetryMax = 5
+	// let the burst subside. With 7 retries and 10s base delay (exponential,
+	// capped at 90s), the total retry window spans ~5-8 minutes which is wide
+	// enough for GitHub's rate-limit window to clear.
+	defaultInitRetryMax = 7
 
 	// initRetryBaseDelay is the base delay for the first retry. Each subsequent
 	// retry doubles the delay (capped at initRetryMaxDelay) and adds jitter.
-	initRetryBaseDelay = 5 * time.Second
+	initRetryBaseDelay = 10 * time.Second
 
 	// initRetryMaxDelay caps the per-retry backoff to avoid excessively long waits.
-	initRetryMaxDelay = 60 * time.Second
+	initRetryMaxDelay = 90 * time.Second
 )
 
 // InitStep runs `terraform init`.
