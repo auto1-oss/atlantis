@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/runatlantis/atlantis/server/events/vcs/common"
@@ -284,6 +285,83 @@ func TestWriteOrgGitCreds_ErrIfBadHomeDir(t *testing.T) {
 	logger := logging.NewNoopLogger(t)
 	err := common.WriteOrgGitCreds("x-access-token", "token", "github.com", "my-org/", "/this/does/not/exist", logger) // #nosec G101 -- test fixture
 	Assert(t, err != nil, "should return error for non-existent home dir")
+}
+
+// Test that WriteAppGitCreds writes a catch-all token-embedded rewrite (no credential.helper).
+func TestWriteAppGitCreds_CatchAllRewrite(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	err := common.WriteAppGitCreds("x-access-token", "ghs_token", "github.com", tmp, logger) // #nosec G101 -- test fixture
+	Ok(t, err)
+
+	appConfigFile := filepath.Join(tmp, ".gitconfig-app")
+	actContents, err := os.ReadFile(appConfigFile)
+	Ok(t, err)
+	expContents := "[url \"https://x-access-token:ghs_token@github.com/\"]\n" + // #nosec G101 -- test fixture
+		"\tinsteadOf = ssh://git@github.com/\n" +
+		"\tinsteadOf = https://github.com/\n"
+	Equals(t, expContents, string(actContents))
+
+	// include.path should point at the app config file.
+	out, err := exec.Command("git", "config", "--global", "--get-all", "include.path").Output()
+	Ok(t, err)
+	Equals(t, appConfigFile+"\n", string(out))
+
+	// It must NOT configure credential.helper or write ~/.git-credentials (the poisoning vector).
+	helperOut, _ := exec.Command("git", "config", "--global", "credential.helper").Output()
+	Equals(t, "", string(helperOut))
+	_, statErr := os.Stat(filepath.Join(tmp, ".git-credentials"))
+	Assert(t, os.IsNotExist(statErr), "WriteAppGitCreds must not create .git-credentials")
+}
+
+// Test that WriteAppGitCreds updates the embedded token on rotation without duplicating include.path.
+func TestWriteAppGitCreds_UpdatesTokenOnRotation(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	Ok(t, common.WriteAppGitCreds("x-access-token", "token1", "github.com", tmp, logger)) // #nosec G101 -- test fixture
+	Ok(t, common.WriteAppGitCreds("x-access-token", "token2", "github.com", tmp, logger)) // #nosec G101 -- test fixture
+
+	actContents, err := os.ReadFile(filepath.Join(tmp, ".gitconfig-app"))
+	Ok(t, err)
+	Assert(t, !contains(string(actContents), "token1"), "old token should be replaced")
+	Assert(t, contains(string(actContents), "token2"), "new token should be present")
+
+	out, err := exec.Command("git", "config", "--global", "--get-all", "include.path").Output()
+	Ok(t, err)
+	Equals(t, 1, len(filepath.SplitList(strings.TrimSpace(string(out)))))
+}
+
+// Test that the app catch-all and an org rewrite coexist as separate, correctly-scoped includes.
+// Git's longest-match then routes each org's URLs to its own embedded token (the fix for the
+// cross-org credential poisoning): github.com/wkda/ -> wkda token, everything else -> primary.
+func TestWriteAppGitCreds_CoexistsWithOrgRewrite(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	Ok(t, common.WriteAppGitCreds("x-access-token", "primary_token", "github.com", tmp, logger))       // #nosec G101 -- test fixture
+	Ok(t, common.WriteOrgGitCreds("x-access-token", "wkda_token", "github.com", "wkda/", tmp, logger)) // #nosec G101 -- test fixture
+
+	// Catch-all: scoped to github.com/ with the primary token.
+	appContents, err := os.ReadFile(filepath.Join(tmp, ".gitconfig-app"))
+	Ok(t, err)
+	Assert(t, contains(string(appContents), "primary_token@github.com/\""), "app rewrite should embed primary token at host root")
+	Assert(t, contains(string(appContents), "insteadOf = ssh://git@github.com/\n"), "app rewrite should be the catch-all")
+
+	// Org: longer-match, scoped to github.com/wkda/ with the wkda token.
+	orgContents, err := os.ReadFile(filepath.Join(tmp, ".gitconfig-org-wkda"))
+	Ok(t, err)
+	Assert(t, contains(string(orgContents), "wkda_token@github.com/wkda/"), "org rewrite should embed wkda token scoped to /wkda/")
+
+	// Both files are included from ~/.gitconfig.
+	out, err := exec.Command("git", "config", "--global", "--get-all", "include.path").Output()
+	Ok(t, err)
+	Assert(t, contains(string(out), filepath.Join(tmp, ".gitconfig-app")), "app config should be included")
+	Assert(t, contains(string(out), filepath.Join(tmp, ".gitconfig-org-wkda")), "org config should be included")
 }
 
 func contains(s, substr string) bool {

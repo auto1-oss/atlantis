@@ -29,6 +29,11 @@ type tokenRotator struct {
 	// global catch-all rewrite written by the default rotator. This allows a single
 	// GitHub App with multiple installations to serve different orgs correctly.
 	orgPath string
+	// appPrimary, when true (and orgPath is empty), writes a catch-all URL rewrite with
+	// the token embedded (WriteAppGitCreds) instead of the credential.helper/.git-credentials
+	// flow. This avoids a shared host-level credential slot that additional-org tokens could
+	// poison. Used for the GitHub App's primary installation.
+	appPrimary bool
 }
 
 func NewTokenRotator(
@@ -69,6 +74,27 @@ func NewOrgTokenRotator(
 	}
 }
 
+// NewAppTokenRotator creates the rotator for the GitHub App's primary installation. It writes
+// a catch-all git URL rewrite with the token embedded (via WriteAppGitCreds) instead of using
+// credential.helper/.git-credentials, so additional-org installation tokens cannot poison a
+// shared host-level credential slot.
+func NewAppTokenRotator(
+	log logging.SimpleLogging,
+	githubCredentials Credentials,
+	githubHostname string,
+	gitUser string,
+	homeDirPath string) TokenRotator {
+
+	return &tokenRotator{
+		log:               log,
+		githubCredentials: githubCredentials,
+		githubHostname:    githubHostname,
+		gitUser:           gitUser,
+		homeDirPath:       homeDirPath,
+		appPrimary:        true,
+	}
+}
+
 // make sure interface is implemented correctly
 var _ TokenRotator = (*tokenRotator)(nil)
 
@@ -102,6 +128,15 @@ func (r *tokenRotator) rotate() error {
 		// Uses a per-org include file so rotations cleanly overwrite only that org's entry.
 		if err := common.WriteOrgGitCreds(r.gitUser, token, r.githubHostname, r.orgPath, r.homeDirPath, r.log); err != nil {
 			return fmt.Errorf("writing org git credentials for %s: %w", r.orgPath, err)
+		}
+		return nil
+	}
+
+	if r.appPrimary {
+		// Catch-all rewrite with the token embedded (no credential.helper / .git-credentials),
+		// so additional-org tokens can't poison a shared host-level credential slot.
+		if err := common.WriteAppGitCreds(r.gitUser, token, r.githubHostname, r.homeDirPath, r.log); err != nil {
+			return fmt.Errorf("writing app git credentials: %w", err)
 		}
 		return nil
 	}

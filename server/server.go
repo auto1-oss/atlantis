@@ -568,7 +568,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			GithubHostname: userConfig.GithubHostname,
 		}
 
-		githubAppTokenRotator := github.NewTokenRotator(logger, githubCredentials, userConfig.GithubHostname, "x-access-token", home)
+		githubAppTokenRotator := github.NewAppTokenRotator(logger, githubCredentials, userConfig.GithubHostname, "x-access-token", home)
 		tokenJd, err := githubAppTokenRotator.GenerateJob()
 		if err != nil {
 			return nil, fmt.Errorf("could not write credentials: %w", err)
