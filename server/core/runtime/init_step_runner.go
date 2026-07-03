@@ -18,21 +18,27 @@ import (
 
 const (
 	// defaultInitRetryMax is the default number of retries when terraform init
-	// fails due to transient git clone errors. GitHub rate-limits concurrent
-	// installation-token clones and returns HTTP 404 ("Repository not found").
-	// With parallel plans (e.g. pool=10), many workers clone the same private
-	// module repo at once, triggering this limit. Retries with jittered backoff
-	// let the burst subside. With 7 retries and 10s base delay (exponential,
-	// capped at 90s), the total retry window spans ~5-8 minutes which is wide
-	// enough for GitHub's rate-limit window to clear.
-	defaultInitRetryMax = 7
+	// fails due to transient git clone errors. GitHub applies stricter abuse
+	// detection on datacenter/cloud IPs and returns HTTP 404 ("Repository not
+	// found") when too many concurrent clones hit the same repo using a GitHub
+	// App installation token. Retries with jittered backoff let the burst
+	// subside.
+	defaultInitRetryMax = 5
 
 	// initRetryBaseDelay is the base delay for the first retry. Each subsequent
 	// retry doubles the delay (capped at initRetryMaxDelay) and adds jitter.
 	initRetryBaseDelay = 10 * time.Second
 
 	// initRetryMaxDelay caps the per-retry backoff to avoid excessively long waits.
-	initRetryMaxDelay = 90 * time.Second
+	initRetryMaxDelay = 60 * time.Second
+
+	// DefaultInitConcurrency is the default maximum number of concurrent
+	// terraform init operations. GitHub's abuse detection on datacenter IPs
+	// triggers 404 errors when too many concurrent git clones use the same
+	// installation token from the same IP. Limiting concurrency prevents the
+	// burst that triggers the block, while still allowing parallelism for the
+	// non-init phases (plan, apply). A value of 0 means unlimited.
+	DefaultInitConcurrency = 4
 )
 
 // InitStep runs `terraform init`.
@@ -40,6 +46,11 @@ type InitStepRunner struct {
 	TerraformExecutor     TerraformExec
 	DefaultTFDistribution terraform.Distribution
 	DefaultTFVersion      *version.Version
+	// InitSemaphore limits the number of concurrent terraform init operations.
+	// When non-nil, a worker must acquire a slot before running init and
+	// releases it when done. This prevents GitHub from blocking burst
+	// concurrent git clones from datacenter IPs.
+	InitSemaphore chan struct{}
 }
 
 func (i *InitStepRunner) Run(ctx command.ProjectContext, extraArgs []string, path string, envs map[string]string) (string, error) {
@@ -87,6 +98,18 @@ func (i *InitStepRunner) Run(ctx command.ProjectContext, extraArgs []string, pat
 	finalArgs := common.DeDuplicateExtraArgs(terraformInitArgs, extraArgs)
 
 	terraformInitCmd := append(terraformInitVerb, finalArgs...)
+
+	// Acquire semaphore slot to limit concurrent init operations.
+	// GitHub's abuse detection on datacenter IPs blocks burst concurrent
+	// git clones using the same installation token, returning 404
+	// "Repository not found". The semaphore serializes inits so only N
+	// run at a time; plan/apply still run fully parallel after init.
+	if i.InitSemaphore != nil {
+		ctx.Log.Debug("waiting for init semaphore slot (%d/%d in use)", len(i.InitSemaphore), cap(i.InitSemaphore))
+		i.InitSemaphore <- struct{}{}
+		defer func() { <-i.InitSemaphore }()
+		ctx.Log.Debug("acquired init semaphore slot")
+	}
 
 	out, err := i.TerraformExecutor.RunCommandWithVersion(ctx, path, terraformInitCmd, envs, tfDistribution, tfVersion, ctx.Workspace)
 	if err != nil {

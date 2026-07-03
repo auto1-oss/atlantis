@@ -690,6 +690,18 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	)
 	defaultTfDistribution := terraformClient.DefaultDistribution()
 	defaultTfVersion := terraformClient.DefaultVersion()
+
+	// Create a semaphore to limit concurrent terraform init operations.
+	// GitHub's abuse detection on datacenter IPs blocks burst concurrent git
+	// clones using the same installation token, returning HTTP 404
+	// ("Repository not found"). The semaphore ensures only N inits run at
+	// once; plan/apply still run fully parallel after init completes.
+	var initSemaphore chan struct{}
+	if runtime.DefaultInitConcurrency > 0 {
+		initSemaphore = make(chan struct{}, runtime.DefaultInitConcurrency)
+		logger.Info("init concurrency limited to %d parallel operations", runtime.DefaultInitConcurrency)
+	}
+
 	pendingPlanFinder := &events.DefaultPendingPlanFinder{}
 	runStepRunner := &runtime.RunStepRunner{
 		TerraformExecutor:       terraformClient,
@@ -794,6 +806,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			TerraformExecutor:     terraformClient,
 			DefaultTFDistribution: defaultTfDistribution,
 			DefaultTFVersion:      defaultTfVersion,
+			InitSemaphore:         initSemaphore,
 		},
 		PlanStepRunner:        runtime.NewPlanStepRunner(terraformClient, defaultTfDistribution, defaultTfVersion, commitStatusUpdater, terraformClient),
 		ShowStepRunner:        showStepRunner,
