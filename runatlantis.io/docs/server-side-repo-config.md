@@ -100,6 +100,8 @@ repos:
   # If any part of this setting is set here, it overrides the entire setting in the repo config.
   autodiscover:
     mode: auto
+    # Optionally set a workspace for all autodiscovered projects
+    workspace: ""
     # Optionally ignore some paths for autodiscovery by a glob path.
     # When autodiscovery is enabled, also applies to all targeted -d commands
     # (plan, apply, import, etc.) when the path has no explicit project configuration.
@@ -585,6 +587,21 @@ If you set a workflow with the key `default`, it will override this.
   * `allow_custom_workflows` is set from the `id: /.*/` config and isn't unset
     by the `id: github.com/owner/repo` config because it didn't define that key.
 :::
+
+### AutoDiscover
+
+```yaml
+mode: auto
+workspace: ""
+ignore_paths:
+  - some/path/**
+```
+
+| Key          | Type            | Default  | Required | Description                                                                                                                                                                                                           |
+|--------------|-----------------|----------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| mode         | string          | `"auto"` | no       | When `auto`, projects are discovered only if the repo has no `projects` configured. When `enabled`, discovery always runs. When `disabled`, discovery never runs.                                                     |
+| workspace    | string          | `""`     | no       | Workspace to use for all autodiscovered projects. When set, this overrides workspace detection from `terraform { cloud { workspaces { name = "..." } } }` blocks. Useful when running one Atlantis instance per workspace. |
+| ignore_paths | array\[string\] | `[]`     | no       | List of path globs (as defined [here](https://pkg.go.dev/github.com/bmatcuk/doublestar/v4)) to exclude from autodiscovery.                                                                                            |
 
 ### RepoLocks
 

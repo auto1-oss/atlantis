@@ -57,6 +57,7 @@ version: 3 # Available since v0.1.0
 automerge: true # Available since v0.15.0
 autodiscover: # Available since v0.18.0
   mode: auto
+  workspace: default
   ignore_paths:
   - some/path
 delete_source_branch_on_merge: true # Available since v0.15.0
@@ -428,6 +429,16 @@ When `ignore_paths` is set, it applies to:
 - All targeted `-d` commands (`plan`, `apply`, `import`, `state rm`, etc.) when autodiscovery is enabled, if the path has no explicit project configuration
 
 This makes `ignore_paths` useful for **multi-instance setups** where each Atlantis instance manages a different directory subtree. For example, one instance can ignore `environments/prod/**` while another ignores `environments/nonprod/**`, preventing cross-instance interference on targeted commands.
+
+```yaml
+autodiscover:
+   mode: "enabled"
+   workspace: qa
+   ignore_paths:
+      - terraform/aws-test/**
+```
+
+Use `workspace` to set the Terraform workspace for all autodiscovered projects. This is useful when running separate Atlantis instances per workspace on a shared repository. The configured workspace takes precedence over any workspace detected from `terraform { cloud { workspaces { name = "..." } } }` blocks in Terraform code.
 
 ### Custom Backend Config
 
