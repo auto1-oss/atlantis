@@ -96,6 +96,7 @@ const (
 	GHAppKeyFileFlag                 = "gh-app-key-file"
 	GHAppSlugFlag                    = "gh-app-slug"
 	GHAppInstallationIDFlag          = "gh-app-installation-id"
+	GHAppAdditionalInstallationsFlag = "gh-app-additional-installations"
 	GHOrganizationFlag               = "gh-org"
 	GHWebhookSecretFlag              = "gh-webhook-secret"               // nolint: gosec
 	GHAllowMergeableBypassApply      = "gh-allow-mergeable-bypass-apply" // nolint: gosec
@@ -359,6 +360,14 @@ var stringFlags = map[string]stringFlag{
 	},
 	GHAppSlugFlag: {
 		description: "The Github app slug (ie. the URL-friendly name of your GitHub App)",
+	},
+	GHAppAdditionalInstallationsFlag: {
+		description: "Comma-separated list of additional GitHub App installations in the format installationID:orgName " +
+			"(e.g. '125882175:my-org' or '125882175:org-one,987654321:org-two'). " +
+			"Each entry gets org-specific git URL rewrites so terraform can clone modules " +
+			"from those orgs using the correct installation token. " +
+			"Requires --write-git-creds and --gh-app-id/--gh-app-key to be set.",
+		defaultValue: "",
 	},
 	GHOrganizationFlag: {
 		description:  "The name of the GitHub organization to use during the creation of a Github App for Atlantis",
@@ -1121,6 +1130,10 @@ func (s *ServerCmd) validate(userConfig server.UserConfig) error {
 		if (userConfig.GithubAppKey == "") == (userConfig.GithubAppKeyFile == "") {
 			return vcsErr
 		}
+	}
+	if userConfig.GithubAppAdditionalInstallations != "" && userConfig.GithubAppInstallationID == 0 {
+		return fmt.Errorf("--%s requires --%s to be set; when the app is installed in multiple orgs, auto-detection cannot select the primary installation",
+			GHAppAdditionalInstallationsFlag, GHAppInstallationIDFlag)
 	}
 	// At this point, we know that there can't be a single user/token without
 	// its partner, but we haven't checked if any user/token is set at all.

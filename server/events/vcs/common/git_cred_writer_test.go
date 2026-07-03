@@ -199,3 +199,102 @@ func TestWriteGitCreds_ConfigureGitUrlOverride(t *testing.T) {
 	Ok(t, err)
 	Equals(t, expOutput+"\n", string(actOutput))
 }
+
+// Test that WriteOrgGitCreds creates the org-specific config file with the correct content.
+func TestWriteOrgGitCreds_CreatesConfigFile(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	err := common.WriteOrgGitCreds("x-access-token", "ghs_token", "github.com", "my-org/", tmp, logger) // #nosec G101 -- test fixture
+	Ok(t, err)
+
+	orgConfigFile := filepath.Join(tmp, ".gitconfig-org-my-org")
+	actContents, err := os.ReadFile(orgConfigFile)
+	Ok(t, err)
+
+	expContents := "[url \"https://x-access-token:ghs_token@github.com/my-org/\"]\n" + // #nosec G101 -- test fixture
+		"\tinsteadOf = ssh://git@github.com/my-org/\n" +
+		"\tinsteadOf = https://github.com/my-org/\n"
+	Equals(t, expContents, string(actContents))
+}
+
+// Test that WriteOrgGitCreds adds include.path to ~/.gitconfig on first call.
+func TestWriteOrgGitCreds_AddsIncludePath(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	err := common.WriteOrgGitCreds("x-access-token", "ghs_token", "github.com", "my-org/", tmp, logger) // #nosec G101 -- test fixture
+	Ok(t, err)
+
+	orgConfigFile := filepath.Join(tmp, ".gitconfig-org-my-org")
+	actOutput, err := exec.Command("git", "config", "--global", "--get-all", "include.path").Output()
+	Ok(t, err)
+	Assert(t, len(actOutput) > 0, "include.path should be set")
+	Equals(t, orgConfigFile+"\n", string(actOutput))
+}
+
+// Test that calling WriteOrgGitCreds twice does not add include.path twice.
+func TestWriteOrgGitCreds_NoduplicateIncludePath(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	err := common.WriteOrgGitCreds("x-access-token", "ghs_token", "github.com", "my-org/", tmp, logger) // #nosec G101 -- test fixture
+	Ok(t, err)
+	err = common.WriteOrgGitCreds("x-access-token", "ghs_token2", "github.com", "my-org/", tmp, logger) // #nosec G101 -- test fixture
+	Ok(t, err)
+
+	orgConfigFile := filepath.Join(tmp, ".gitconfig-org-my-org")
+	actOutput, err := exec.Command("git", "config", "--global", "--get-all", "include.path").Output()
+	Ok(t, err)
+	// Should appear exactly once
+	lines := filepath.SplitList(string(actOutput))
+	count := 0
+	for _, line := range lines {
+		if line == orgConfigFile {
+			count++
+		}
+	}
+	Assert(t, count <= 1, "include.path should contain the org config file at most once")
+}
+
+// Test that WriteOrgGitCreds updates the file with a new token on repeat calls.
+func TestWriteOrgGitCreds_UpdatesTokenOnRotation(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	err := common.WriteOrgGitCreds("x-access-token", "token1", "github.com", "my-org/", tmp, logger) // #nosec G101 -- test fixture
+	Ok(t, err)
+	err = common.WriteOrgGitCreds("x-access-token", "token2", "github.com", "my-org/", tmp, logger) // #nosec G101 -- test fixture
+	Ok(t, err)
+
+	orgConfigFile := filepath.Join(tmp, ".gitconfig-org-my-org")
+	actContents, err := os.ReadFile(orgConfigFile)
+	Ok(t, err)
+
+	Assert(t, !contains(string(actContents), "token1"), "old token should be replaced")
+	Assert(t, contains(string(actContents), "token2"), "new token should be present")
+}
+
+// Test that WriteOrgGitCreds errors if home dir doesn't exist.
+func TestWriteOrgGitCreds_ErrIfBadHomeDir(t *testing.T) {
+	logger := logging.NewNoopLogger(t)
+	err := common.WriteOrgGitCreds("x-access-token", "token", "github.com", "my-org/", "/this/does/not/exist", logger) // #nosec G101 -- test fixture
+	Assert(t, err != nil, "should return error for non-existent home dir")
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
+}
+
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
