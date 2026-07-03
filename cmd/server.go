@@ -47,6 +47,7 @@ const (
 	ADUserFlag                       = "azuredevops-user"
 	ADHostnameFlag                   = "azuredevops-hostname"
 	AllowCommandsFlag                = "allow-commands"
+	AllowPartialApplyFlag            = "allow-partial-apply"
 	BlockedExtraArgsFlag             = "blocked-extra-args"
 	AllowForkPRsFlag                 = "allow-fork-prs"
 	AtlantisURLFlag                  = "atlantis-url"
@@ -541,6 +542,12 @@ var stringFlags = map[string]stringFlag{
 var boolFlags = map[string]boolFlag{
 	AllowForkPRsFlag: {
 		description:  "Allow Atlantis to run on pull requests from forks. A security issue for public repos.",
+		defaultValue: false,
+	},
+	AllowPartialApplyFlag: {
+		description: "For \"atlantis apply\" without flags (apply all), apply the projects that planned successfully " +
+			"and skip projects whose plan errored, instead of failing the entire apply. Skipped projects are reported " +
+			"in the PR comment and server logs.",
 		defaultValue: false,
 	},
 	AutoplanModules: {

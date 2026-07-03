@@ -227,7 +227,13 @@ func (m *MarkdownRenderer) Render(ctx *command.Context, res command.Result, cmd 
 	if res.Failure != "" {
 		return m.renderTemplateTrimSpace(templates.Lookup("failureWithLog"), failureData{res.Failure, "", common})
 	}
-	return m.renderProjectResults(ctx, res.ProjectResults, common)
+	rendered := m.renderProjectResults(ctx, res.ProjectResults, common)
+	if res.Warning != "" {
+		// Informational banner (e.g. projects skipped by partial apply). Does not
+		// affect success/failure — see command.Result.HasErrors.
+		rendered = fmt.Sprintf("> [!WARNING]\n> %s\n\n%s", res.Warning, rendered)
+	}
+	return rendered
 }
 
 func (m *MarkdownRenderer) renderProjectResults(ctx *command.Context, results []command.ProjectResult, common commonData) string {

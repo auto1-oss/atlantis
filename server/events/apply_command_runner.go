@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/runatlantis/atlantis/server/core/db"
 	"github.com/runatlantis/atlantis/server/core/locking"
@@ -81,6 +82,10 @@ type ApplyCommandRunner struct {
 	// are found
 	silenceVCSStatusNoProjects bool
 	SilencePRComments          []string
+	// AllowPartialApply, when true, makes "atlantis apply" (apply all) apply the
+	// successfully-planned projects and skip projects whose plan errored, reporting
+	// the skipped projects in the PR comment and server log.
+	AllowPartialApply bool
 }
 
 func (a *ApplyCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
@@ -229,6 +234,12 @@ func (a *ApplyCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
 
 	preApplyPullStatus := ctx.PullStatus
 	result := runProjectCmdsWithCancellationTracker(ctx, projectCmds, a.cancellationTracker, a.parallelPoolSize, a.isParallelEnabled(projectCmds), a.prjCmdRunner.Apply)
+	if a.AllowPartialApply {
+		if warning := partialApplySkippedWarning(preApplyPullStatus, projectCmds); warning != "" {
+			ctx.Log.Warn("%s", warning)
+			result.Warning = warning
+		}
+	}
 	finalLivePull, err := a.refreshLivePullIdentity(ctx)
 	if err != nil {
 		ctx.Log.Err("fetching live pull request after apply: %s", err)
@@ -502,3 +513,31 @@ var applyDisabledComment = "**Error:** Running `atlantis apply` is disabled."
 
 // applyLockCheckFailedComment is posted when the global apply lock check fails (e.g. database unreachable).
 var applyLockCheckFailedComment = "**Error:** Failed to check global apply lock. Running `atlantis apply` is not allowed until the lock backend is reachable."
+
+// partialApplySkippedWarning returns an informational message listing projects that
+// were skipped by a partial apply — i.e. recorded with an errored plan and therefore not
+// among the built apply commands. Returns "" when nothing was skipped.
+func partialApplySkippedWarning(pullStatus *models.PullStatus, appliedCmds []command.ProjectContext) string {
+	if pullStatus == nil {
+		return ""
+	}
+	applied := make(map[applyPlanKey]struct{}, len(appliedCmds))
+	for _, c := range appliedCmds {
+		applied[newApplyPlanKey(c.Workspace, c.RepoRelDir, c.ProjectName)] = struct{}{}
+	}
+	var skipped []string
+	for _, proj := range pullStatus.Projects {
+		if proj.Status != models.ErroredPlanStatus {
+			continue
+		}
+		if _, ok := applied[newApplyPlanKey(proj.Workspace, proj.RepoRelDir, proj.ProjectName)]; ok {
+			continue
+		}
+		skipped = append(skipped, fmt.Sprintf("`%s` (workspace `%s`)", proj.RepoRelDir, proj.Workspace))
+	}
+	if len(skipped) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Partial apply: skipped %d project(s) with an errored plan; run `atlantis plan` to fix and apply them: %s",
+		len(skipped), strings.Join(skipped, ", "))
+}

@@ -294,6 +294,9 @@ type DefaultProjectCommandBuilder struct {
 	SilenceNoProjects bool
 	// User config option: Include git untracked files in the modified file list.
 	IncludeGitUntrackedFiles bool
+	// User config option: For "atlantis apply" (apply all), apply the successfully-planned
+	// projects and skip projects whose plan errored, instead of failing the whole apply.
+	AllowPartialApply bool
 	// User config option: Controls auto-discovery of projects in a repository.
 	AutoDiscoverMode string
 	// Handles the actual running of Terraform commands.
@@ -1263,7 +1266,7 @@ func (p *DefaultProjectCommandBuilder) buildAllProjectCommandsByPlan(ctx *comman
 		if p.WorkingDirLocker != nil {
 			hasActivePlan = p.WorkingDirLocker.HasCommandLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, command.Plan)
 		}
-		if err := ValidatePlansForApplyWithActivePlan(ctx, plans, hasActivePlan); err != nil {
+		if err := ValidatePlansForApplyWithActivePlan(ctx, plans, hasActivePlan, p.AllowPartialApply); err != nil {
 			return nil, err
 		}
 	}
@@ -1308,28 +1311,31 @@ func (p *DefaultProjectCommandBuilder) buildAllProjectCommandsByPlan(ctx *comman
 // When plans are found, validates each against current-head PullStatus.
 // When no plans are found, fails if no current PullStatus exists or if it is stale.
 func ValidatePlansForApply(ctx *command.Context, plans []PendingPlan) error {
-	return ValidatePlansForApplyWithActivePlan(ctx, plans, false)
+	return ValidatePlansForApplyWithActivePlan(ctx, plans, false, false)
 }
 
-func ValidatePlansForApplyWithActivePlan(ctx *command.Context, plans []PendingPlan, hasActivePlan bool) error {
-	return ValidatePlansForApplyWithCurrentPull(ctx, plans, hasActivePlan, ctx.Pull)
+// allowPartialApply, when true, makes an apply-all tolerate projects whose plan
+// errored (models.ErroredPlanStatus): they are skipped instead of failing the whole
+// apply, so the successfully-planned projects still apply.
+func ValidatePlansForApplyWithActivePlan(ctx *command.Context, plans []PendingPlan, hasActivePlan, allowPartialApply bool) error {
+	return ValidatePlansForApplyWithCurrentPull(ctx, plans, hasActivePlan, ctx.Pull, allowPartialApply)
 }
 
 // ValidatePlansForApplyWithCurrentHead validates plans against an authoritative
 // current head. This lets apply refresh the live PR head under the apply lock
 // before generic builder validation instead of trusting the command-start pull
 // snapshot.
-func ValidatePlansForApplyWithCurrentHead(ctx *command.Context, plans []PendingPlan, hasActivePlan bool, currentHead string) error {
+func ValidatePlansForApplyWithCurrentHead(ctx *command.Context, plans []PendingPlan, hasActivePlan bool, currentHead string, allowPartialApply bool) error {
 	currentPull := ctx.Pull
 	currentPull.HeadCommit = currentHead
-	return ValidatePlansForApplyWithCurrentPull(ctx, plans, hasActivePlan, currentPull)
+	return ValidatePlansForApplyWithCurrentPull(ctx, plans, hasActivePlan, currentPull, allowPartialApply)
 }
 
 // ValidatePlansForApplyWithCurrentPull validates plans against an authoritative
 // current pull identity. This lets apply refresh the live PR head/base under the
 // apply lock before generic builder validation instead of trusting the
 // command-start pull snapshot.
-func ValidatePlansForApplyWithCurrentPull(ctx *command.Context, plans []PendingPlan, hasActivePlan bool, currentPull models.PullRequest) error {
+func ValidatePlansForApplyWithCurrentPull(ctx *command.Context, plans []PendingPlan, hasActivePlan bool, currentPull models.PullRequest, allowPartialApply bool) error {
 	if currentPull.HeadCommit != "" || currentPull.BaseBranch != "" {
 		ctxCopy := *ctx
 		if currentPull.HeadCommit != "" {
@@ -1344,12 +1350,12 @@ func ValidatePlansForApplyWithCurrentPull(ctx *command.Context, plans []PendingP
 		return fmt.Errorf("a plan is currently running for this pull request; wait for it to finish before applying")
 	}
 	if len(plans) > 0 {
-		return validateFoundPlans(ctx, plans)
+		return validateFoundPlans(ctx, plans, allowPartialApply)
 	}
-	return validateNoPlansFound(ctx, hasActivePlan)
+	return validateNoPlansFound(ctx, hasActivePlan, allowPartialApply)
 }
 
-func validateFoundPlans(ctx *command.Context, plans []PendingPlan) error {
+func validateFoundPlans(ctx *command.Context, plans []PendingPlan, allowPartialApply bool) error {
 	if ctx.PullStatus == nil {
 		return fmt.Errorf("no recorded plan status found; run `atlantis plan` before apply")
 	}
@@ -1376,10 +1382,10 @@ func validateFoundPlans(ctx *command.Context, plans []PendingPlan) error {
 		}
 	}
 
-	return validatePullStatusHasPlanFiles(ctx.PullStatus, planKeys)
+	return validatePullStatusHasPlanFiles(ctx.PullStatus, planKeys, allowPartialApply)
 }
 
-func validateNoPlansFound(ctx *command.Context, hasActivePlan bool) error {
+func validateNoPlansFound(ctx *command.Context, hasActivePlan, allowPartialApply bool) error {
 	if ctx.PullStatus == nil {
 		return fmt.Errorf("no current plan status found; run `atlantis plan` before apply")
 	}
@@ -1388,7 +1394,7 @@ func validateNoPlansFound(ctx *command.Context, hasActivePlan bool) error {
 		return err
 	}
 
-	return validatePullStatusHasPlanFiles(ctx.PullStatus, nil)
+	return validatePullStatusHasPlanFiles(ctx.PullStatus, nil, allowPartialApply)
 }
 
 func shortSHA(sha string) string {
@@ -1455,7 +1461,7 @@ func newApplyPlanKey(workspace, repoRelDir, projectName string) applyPlanKey {
 	}
 }
 
-func validatePullStatusHasPlanFiles(pullStatus *models.PullStatus, planKeys map[applyPlanKey]struct{}) error {
+func validatePullStatusHasPlanFiles(pullStatus *models.PullStatus, planKeys map[applyPlanKey]struct{}, allowPartialApply bool) error {
 	for _, proj := range pullStatus.Projects {
 		if _, ok := planKeys[newApplyPlanKey(proj.Workspace, proj.RepoRelDir, proj.ProjectName)]; ok {
 			continue
@@ -1467,6 +1473,12 @@ func validatePullStatusHasPlanFiles(pullStatus *models.PullStatus, planKeys map[
 			)
 		}
 		if statusBlocksGenericApplyWithoutPlan(proj.Status) {
+			// With partial apply enabled, a project whose plan errored is skipped
+			// (it has no plan file) so the successfully-planned projects can still
+			// apply. The skipped projects are reported separately by the apply runner.
+			if allowPartialApply {
+				continue
+			}
 			return fmt.Errorf(
 				"plan for dir %q workspace %q project %q errored and cannot be applied without a plan file; run `atlantis plan`",
 				proj.RepoRelDir, proj.Workspace, proj.ProjectName,

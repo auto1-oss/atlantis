@@ -753,6 +753,11 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		statsScope,
 		terraformClient,
 	)
+	// Enable partial apply on the underlying builder (apply the successfully-planned
+	// projects, skip plan-errored ones) when configured.
+	if dpcb, ok := projectCommandBuilder.ProjectCommandBuilder.(*events.DefaultProjectCommandBuilder); ok {
+		dpcb.AllowPartialApply = userConfig.AllowPartialApply
+	}
 
 	showStepRunner, err := runtime.NewShowStepRunner(terraformClient, defaultTfDistribution, defaultTfVersion)
 
@@ -908,6 +913,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		livePullHeadFetcher,
 		userConfig.DisableAutomergeLabel,
 	)
+	applyCommandRunner.AllowPartialApply = userConfig.AllowPartialApply
 
 	approvePoliciesCommandRunner := events.NewApprovePoliciesCommandRunner(
 		commitStatusUpdater,
