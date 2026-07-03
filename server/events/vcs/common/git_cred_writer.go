@@ -15,20 +15,13 @@ import (
 	"github.com/runatlantis/atlantis/server/logging"
 )
 
-// gitConfigMu serializes all mutations of shared global git state (~/.gitconfig,
-// ~/.git-credentials, and per-org include files). The primary token rotator and every
-// additional org rotator run in their own goroutine on a 30s ticker (see
-// scheduled.ExecutorService), and all invoke WriteGitCreds/WriteOrgGitCreds which run
-// `git config --global ...` against the same ~/.gitconfig. Without this lock, concurrent
-// `git config` invocations contend on ~/.gitconfig.lock (dropping include.path entries) and
-// the ~/.git-credentials read-modify-write races, which intermittently leaves the wrong
-// installation token active for a clone.
+// gitConfigMu serializes all mutations of shared global git state (~/.gitconfig and the
+// per-installation include files). The primary app rotator and every additional org
+// rotator run in their own goroutine on a 30s ticker, all touching this shared state.
 var gitConfigMu sync.Mutex
 
-// atomicWriteFile writes data to path atomically by writing to a temp file in the same
-// directory and renaming it into place. Concurrent readers (e.g. parallel `terraform init`
-// module clones reading git config) therefore always observe either the complete old file
-// or the complete new file, never a truncated/partial write.
+// atomicWriteFile writes data to path atomically (temp file in the same dir + rename), so a
+// concurrent reader (e.g. parallel `terraform init` clones) never sees a partial file.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
@@ -36,9 +29,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("creating temp file in %s: %w", dir, err)
 	}
 	tmpName := tmp.Name()
-	// Best-effort cleanup if we bail before the rename succeeds.
 	defer func() { _ = os.Remove(tmpName) }()
-
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("writing temp file %s: %w", tmpName, err)
@@ -54,6 +45,51 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("renaming %s to %s: %w", tmpName, path, err)
 	}
 	return nil
+}
+
+// ensureIncludePath adds configFile to ~/.gitconfig's include.path exactly once. After the
+// first call it only reads config (no write), so there is no per-rotation churn. Callers
+// must hold gitConfigMu.
+func ensureIncludePath(configFile string, logger logging.SimpleLogging) error {
+	getCmd := exec.Command("git", "config", "--global", "--get-all", "include.path") // nolint: gosec
+	out, _ := getCmd.Output()
+	if strings.Contains(string(out), configFile) {
+		return nil
+	}
+	addCmd := exec.Command("git", "config", "--global", "--add", "include.path", configFile) // nolint: gosec
+	if addOut, err := addCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("adding include.path for %s: %s: %w", configFile, string(addOut), err)
+	}
+	logger.Info("added include.path %s", configFile)
+	return nil
+}
+
+// WriteAppGitCreds writes a catch-all git URL rewrite for the GitHub App's primary
+// installation with the token embedded directly in the URL, included from ~/.gitconfig.
+// Unlike WriteGitCreds it does NOT use `credential.helper store` / ~/.git-credentials:
+// that mechanism keys credentials by host only, so an additional org's installation token
+// can poison the single github.com credential slot and make same-org clones authenticate
+// with the wrong token (HTTP 404). Embedding the token per rewrite, with git's longest-match
+// rule, routes each org to its own token deterministically. Org-scoped rewrites written by
+// WriteOrgGitCreds (e.g. github.com/wkda/) take precedence for their orgs.
+func WriteAppGitCreds(gitUser, gitToken, gitHostname, home string, logger logging.SimpleLogging) error {
+	gitConfigMu.Lock()
+	defer gitConfigMu.Unlock()
+
+	appConfigFile := filepath.Join(home, ".gitconfig-app")
+	rewriteURL := fmt.Sprintf("https://%s:%s@%s/", gitUser, gitToken, gitHostname) // nolint: gosec
+	content := fmt.Sprintf("[url %q]\n\tinsteadOf = ssh://git@%s/\n\tinsteadOf = https://%s/\n",
+		rewriteURL, gitHostname, gitHostname)
+
+	if existing, err := os.ReadFile(appConfigFile); err == nil && string(existing) == content {
+		logger.Debug("app git credentials unchanged, not modifying")
+		return ensureIncludePath(appConfigFile, logger)
+	}
+	if err := atomicWriteFile(appConfigFile, []byte(content), 0600); err != nil {
+		return fmt.Errorf("writing app git config: %w", err)
+	}
+	logger.Debug("refreshed app git credentials %s", appConfigFile)
+	return ensureIncludePath(appConfigFile, logger)
 }
 
 // WriteGitCreds generates a .git-credentials file containing the username and token
@@ -143,30 +179,16 @@ func WriteOrgGitCreds(gitUser, gitToken, gitHostname, orgPath, home string, logg
 	content := fmt.Sprintf("[url %q]\n\tinsteadOf = ssh://git@%s/%s\n\tinsteadOf = https://%s/%s\n",
 		rewriteURL, gitHostname, orgPath, gitHostname, orgPath)
 
-	// Skip the rewrite when nothing changed (the installation token is typically unchanged
-	// between 30s rotations), to avoid needless churn on the shared config file.
+	// Skip when unchanged (token typically unchanged between 30s rotations) to avoid churn.
 	if existing, err := os.ReadFile(orgConfigFile); err == nil && string(existing) == content {
 		logger.Debug("org git credentials for %s unchanged, not modifying", orgConfigFile)
-		return nil
+		return ensureIncludePath(orgConfigFile, logger)
 	}
-
 	if err := atomicWriteFile(orgConfigFile, []byte(content), 0600); err != nil {
 		return fmt.Errorf("writing org git config for %s: %w", orgName, err)
 	}
 	logger.Debug("refreshed org git credentials for %s", orgConfigFile)
-
-	// Ensure ~/.gitconfig includes the org config file (add once).
-	getCmd := exec.Command("git", "config", "--global", "--get-all", "include.path") // nolint: gosec
-	out, _ := getCmd.Output()
-	if !strings.Contains(string(out), orgConfigFile) {
-		addCmd := exec.Command("git", "config", "--global", "--add", "include.path", orgConfigFile) // nolint: gosec
-		if addOut, err := addCmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("adding include.path for %s: %s: %w", orgConfigFile, string(addOut), err)
-		}
-		logger.Info("added include.path for org %s (%s)", orgName, orgConfigFile)
-	}
-
-	return nil
+	return ensureIncludePath(orgConfigFile, logger)
 }
 
 func fileHasLine(line string, filename string) (bool, error) {
