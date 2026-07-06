@@ -12,6 +12,10 @@ type Result struct {
 	// deleted. This happens if automerging is enabled and one project has an
 	// error since automerging requires all plans to succeed.
 	PlansDeleted bool
+	// Warning is an informational message rendered at the top of the command
+	// comment. It does NOT count as an error (see HasErrors) so it does not
+	// affect commit status. Used e.g. to report projects skipped by partial apply.
+	Warning string
 }
 
 // HasErrors returns true if there were any errors during the execution,

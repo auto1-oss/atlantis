@@ -37,6 +37,7 @@ type UserConfig struct {
 	BitbucketToken              string `mapstructure:"bitbucket-token"`
 	BitbucketUser               string `mapstructure:"bitbucket-user"`
 	BitbucketWebhookSecret      string `mapstructure:"bitbucket-webhook-secret"`
+	AllowPartialApply           bool   `mapstructure:"allow-partial-apply"`
 	CheckoutDepth               int    `mapstructure:"checkout-depth"`
 	CheckoutStrategy            string `mapstructure:"checkout-strategy"`
 	DataDir                     string `mapstructure:"data-dir"`

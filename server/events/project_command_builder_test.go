@@ -5214,7 +5214,7 @@ func TestValidatePlansForApply_FailsWhenPlanInFlightEvenWithEmptyPullStatus(t *t
 			Projects: []models.ProjectStatus{},
 		},
 	}
-	err := events.ValidatePlansForApplyWithActivePlan(ctx, nil, true)
+	err := events.ValidatePlansForApplyWithActivePlan(ctx, nil, true, false)
 	Assert(t, err != nil, "expected active in-flight plan to block empty generic apply")
 	Assert(t, strings.Contains(err.Error(), "plan is currently running"), "got: %s", err)
 }
@@ -5231,7 +5231,7 @@ func TestValidatePlansForApply_FailsWhenPlanInFlightEvenWithExistingPlanFiles(t 
 		},
 	}
 	plans := []events.PendingPlan{{RepoRelDir: "proj1", Workspace: "default"}}
-	err := events.ValidatePlansForApplyWithActivePlan(ctx, plans, true)
+	err := events.ValidatePlansForApplyWithActivePlan(ctx, plans, true, false)
 	Assert(t, err != nil, "expected active in-flight plan to block generic apply with existing files")
 	Assert(t, strings.Contains(err.Error(), "plan is currently running"), "got: %s", err)
 }
@@ -5248,9 +5248,52 @@ func TestValidatePlansForApply_FailsWhenPlanInFlightWithNoChangeOrDiscardedStatu
 			},
 		},
 	}
-	err := events.ValidatePlansForApplyWithActivePlan(ctx, nil, true)
+	err := events.ValidatePlansForApplyWithActivePlan(ctx, nil, true, false)
 	Assert(t, err != nil, "expected active in-flight plan to block generic apply with terminal statuses")
 	Assert(t, strings.Contains(err.Error(), "plan is currently running"), "got: %s", err)
+}
+
+func TestValidatePlansForApply_PartialApplySkipsErroredPlan(t *testing.T) {
+	ctx := &command.Context{
+		Log:  logging.NewNoopLogger(t),
+		Pull: models.PullRequest{HeadCommit: "abc123"},
+		PullStatus: &models.PullStatus{
+			Pull: models.PullRequest{HeadCommit: "abc123"},
+			Projects: []models.ProjectStatus{
+				{RepoRelDir: "proj1", Workspace: "default", Status: models.PlannedPlanStatus},
+				{RepoRelDir: "proj2", Workspace: "default", Status: models.ErroredPlanStatus},
+			},
+		},
+	}
+	// proj1 planned successfully (has a plan file); proj2's plan errored (no plan file).
+	plans := []events.PendingPlan{{RepoRelDir: "proj1", Workspace: "default"}}
+
+	// Strict (default): the errored project blocks the entire apply.
+	err := events.ValidatePlansForApplyWithActivePlan(ctx, plans, false, false)
+	Assert(t, err != nil, "expected errored plan to block apply when partial apply disabled")
+	Assert(t, strings.Contains(err.Error(), "errored"), "got: %s", err)
+
+	// Partial apply: the errored project is skipped so the good plan can apply.
+	err = events.ValidatePlansForApplyWithActivePlan(ctx, plans, false, true)
+	Ok(t, err)
+}
+
+func TestValidatePlansForApply_PartialApplyStillRequiresPlanFileForPlannedStatus(t *testing.T) {
+	// A project recorded as Planned but with no discovered plan file must still fail,
+	// even with partial apply — partial apply only tolerates plan_errored projects.
+	ctx := &command.Context{
+		Log:  logging.NewNoopLogger(t),
+		Pull: models.PullRequest{HeadCommit: "abc123"},
+		PullStatus: &models.PullStatus{
+			Pull: models.PullRequest{HeadCommit: "abc123"},
+			Projects: []models.ProjectStatus{
+				{RepoRelDir: "proj1", Workspace: "default", Status: models.PlannedPlanStatus},
+			},
+		},
+	}
+	err := events.ValidatePlansForApplyWithActivePlan(ctx, nil, false, true)
+	Assert(t, err != nil, "expected missing plan file for Planned status to still fail under partial apply")
+	Assert(t, strings.Contains(err.Error(), "missing"), "got: %s", err)
 }
 
 func TestValidatePlansForApply_NoPlansCurrentAllNoChangesPasses(t *testing.T) {
@@ -5354,7 +5397,7 @@ func TestValidatePlansForApply_GenericAcceptsPullStatusMatchingLiveHeadWhenComma
 		{RepoRelDir: "proj1", Workspace: "default"},
 	}
 
-	err := events.ValidatePlansForApplyWithCurrentHead(ctx, plans, false, liveHead)
+	err := events.ValidatePlansForApplyWithCurrentHead(ctx, plans, false, liveHead, false)
 
 	Ok(t, err)
 }
