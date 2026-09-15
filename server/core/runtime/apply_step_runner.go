@@ -16,7 +16,6 @@ import (
 	"github.com/runatlantis/atlantis/server/core/terraform"
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
-	"github.com/runatlantis/atlantis/server/utils"
 )
 
 // ApplyStepRunner runs `terraform apply`.
@@ -26,14 +25,24 @@ type ApplyStepRunner struct {
 	DefaultTFVersion      *version.Version       `validate:"required"`
 	CommitStatusUpdater   StatusUpdater          `validate:"required"`
 	AsyncTFExec           AsyncTFExec            `validate:"required"`
+	PlanStore             PlanStore              `validate:"required"`
 }
 
 func (a *ApplyStepRunner) Run(ctx command.ProjectContext, extraArgs []string, path string, envs map[string]string) (string, error) {
+	// extra_args comes from configuration, so environment variable references
+	// in it may be expanded. Marked on this copy of the context; everything
+	// else, including comment args, stays literal.
+	if len(extraArgs) > 0 {
+		ctx.ExpandableArgs = extraArgs
+	}
 	if a.hasTargetFlag(ctx, extraArgs) {
 		return "", errors.New("cannot run apply with -target because we are applying an already generated plan. Instead, run -target with atlantis plan")
 	}
 
-	planPath := filepath.Join(path, GetPlanFilename(ctx.Workspace, ctx.ProjectName))
+	planPath := GetPlanFilePath(ctx, path)
+	if loadErr := a.PlanStore.Load(ctx, planPath); loadErr != nil {
+		return "", fmt.Errorf("loading plan: %w", loadErr)
+	}
 	contents, err := os.ReadFile(planPath)
 	if os.IsNotExist(err) {
 		return "", fmt.Errorf("no plan found at path %q and workspace %q–did you run plan?", ctx.RepoRelDir, ctx.Workspace)
@@ -55,7 +64,7 @@ func (a *ApplyStepRunner) Run(ctx command.ProjectContext, extraArgs []string, pa
 
 	// TODO: Leverage PlanTypeStepRunnerDelegate here
 	if IsRemotePlan(contents) {
-		args := append(append([]string{"apply", "-input=false", "-no-color"}, extraArgs...), ctx.EscapedCommentArgs...)
+		args := append(append([]string{"apply", "-input=false", "-no-color"}, extraArgs...), ctx.CommentArgs...)
 		out, err = a.runRemoteApply(ctx, args, path, planPath, tfDistribution, tfVersion, envs)
 		if err == nil {
 			out = a.cleanRemoteApplyOutput(out)
@@ -63,14 +72,16 @@ func (a *ApplyStepRunner) Run(ctx command.ProjectContext, extraArgs []string, pa
 	} else {
 		// NOTE: we need to quote the plan path because Bitbucket Server can
 		// have spaces in its repo owner names which is part of the path.
-		args := append(append(append([]string{"apply", "-input=false"}, extraArgs...), ctx.EscapedCommentArgs...), fmt.Sprintf("%q", planPath))
+		// planPath is passed as its own argument, so a path containing a space
+		// needs no quoting; quoting it would make the quotes part of the path.
+		args := append(append(append([]string{"apply", "-input=false"}, extraArgs...), ctx.CommentArgs...), planPath)
 		out, err = a.TerraformExecutor.RunCommandWithVersion(ctx, path, args, envs, tfDistribution, tfVersion, ctx.Workspace)
 	}
 
 	// If the apply was successful, delete the plan.
 	if err == nil {
 		ctx.Log.Info("apply successful, deleting planfile")
-		if removeErr := utils.RemoveIgnoreNonExistent(planPath); removeErr != nil {
+		if removeErr := a.PlanStore.Remove(ctx, planPath); removeErr != nil {
 			ctx.Log.Warn("failed to delete planfile after successful apply: %s", removeErr)
 		}
 	}
@@ -86,7 +97,9 @@ func (a *ApplyStepRunner) hasTargetFlag(ctx command.ProjectContext, extraArgs []
 		return split[0] == "-target"
 	}
 
-	if slices.ContainsFunc(ctx.EscapedCommentArgs, isTargetFlag) {
+	// CommentArgs, not EscapedCommentArgs: the escaped form has a backslash
+	// before every byte, so it never compares equal to "-target".
+	if slices.ContainsFunc(ctx.CommentArgs, isTargetFlag) {
 		return true
 	}
 	return slices.ContainsFunc(extraArgs, isTargetFlag)

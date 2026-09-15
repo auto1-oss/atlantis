@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/hashicorp/go-version"
 	"github.com/mitchellh/go-homedir"
 	tally "github.com/uber-go/tally/v4"
 	prometheus "github.com/uber-go/tally/v4/prometheus"
@@ -546,10 +547,11 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	workingDirLocker := events.NewDefaultWorkingDirLocker()
 
 	var workingDir events.WorkingDir = &events.FileWorkspace{
-		DataDir:          userConfig.DataDir,
-		CheckoutMerge:    userConfig.CheckoutStrategy == "merge",
-		CheckoutDepth:    userConfig.CheckoutDepth,
-		GithubAppEnabled: githubAppEnabled,
+		DataDir:           userConfig.DataDir,
+		LocalSharePlanDir: userConfig.SharePlanDir,
+		CheckoutMerge:     userConfig.CheckoutStrategy == "merge",
+		CheckoutDepth:     userConfig.CheckoutDepth,
+		GithubAppEnabled:  githubAppEnabled,
 	}
 
 	scheduledExecutorService := scheduled.NewExecutorService(
@@ -640,19 +642,6 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		Database:         database,
 	}
 
-	pullClosedExecutor := events.NewInstrumentedPullClosedExecutor(
-		statsScope,
-		logger,
-		&events.PullClosedExecutor{
-			Locker:                   lockingClient,
-			WorkingDir:               workingDir,
-			Database:                 database,
-			PullClosedTemplate:       &events.PullClosedEventTemplate{},
-			LogStreamResourceCleaner: projectCmdOutputHandler,
-			VCSClient:                vcsClient,
-		},
-	)
-
 	eventParser := &events.EventParser{
 		GithubUser:         userConfig.GithubUser,
 		GithubToken:        userConfig.GithubToken,
@@ -688,14 +677,33 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		allowCommands,
 		userConfig.ToBlockedExtraArgs(),
 	)
-	defaultTfDistribution := terraformClient.DefaultDistribution()
-	defaultTfVersion := terraformClient.DefaultVersion()
-	pendingPlanFinder := &events.DefaultPendingPlanFinder{}
+	defaultTfDistribution := distribution
+	terraformBinDir := binDir
+
+	var defaultTfVersion *version.Version
+	if userConfig.DefaultTFVersion != "" {
+		defaultTfVersion, err = version.NewVersion(userConfig.DefaultTFVersion)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if terraformClient != nil {
+		defaultTfDistribution = terraformClient.DefaultDistribution()
+		defaultTfVersion = terraformClient.DefaultVersion()
+		terraformBinDir = terraformClient.TerraformBinDir()
+	}
+
+	pendingPlanFinder := &events.DefaultPendingPlanFinder{
+		Log:               logger,
+		DataDir:           userConfig.DataDir,
+		LocalSharePlanDir: userConfig.SharePlanDir,
+	}
 	runStepRunner := &runtime.RunStepRunner{
 		TerraformExecutor:       terraformClient,
 		DefaultTFDistribution:   defaultTfDistribution,
 		DefaultTFVersion:        defaultTfVersion,
-		TerraformBinDir:         terraformClient.TerraformBinDir(),
+		TerraformBinDir:         terraformBinDir,
 		ProjectCmdOutputHandler: projectCmdOutputHandler,
 	}
 	drainer := &events.Drainer{}
@@ -726,6 +734,56 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		CommitStatusUpdater: commitStatusUpdater,
 		Router:              router,
 	}
+	var planStore runtime.PlanStore
+	if userConfig.EnableExternalStores {
+		psCfg := globalCfg.ExternalStores.PlanStore
+		if psCfg.Type == "" {
+			return nil, fmt.Errorf("--enable-external-stores is set but no external_stores.plan_store.type is configured in the server-side repo config")
+		}
+		switch psCfg.Type {
+		case "s3":
+			logger.Info("initializing S3 plan store (bucket=%s, region=%s)", psCfg.S3.Bucket, psCfg.S3.Region)
+			planStore, err = runtime.NewS3PlanStore(runtime.S3PlanStoreConfig{
+				Bucket:         psCfg.S3.Bucket,
+				Region:         psCfg.S3.Region,
+				Prefix:         psCfg.S3.Prefix,
+				Endpoint:       psCfg.S3.Endpoint,
+				ForcePathStyle: psCfg.S3.ForcePathStyle,
+				Profile:        psCfg.S3.Profile,
+			}, logger)
+			if err != nil {
+				return nil, fmt.Errorf("initializing S3 plan store: %w", err)
+			}
+		default:
+			return nil, fmt.Errorf("unsupported plan store type %q", psCfg.Type)
+		}
+	} else {
+		local := &runtime.LocalPlanStore{}
+		// A plan store dir outside the data dir survives the loss of a
+		// checkout, so plans there can be recovered after a restart even
+		// without an external store.
+		if userConfig.SharePlanDir != "" && filepath.Clean(userConfig.SharePlanDir) != filepath.Clean(userConfig.DataDir) {
+			local.SeparatePlanDir = userConfig.SharePlanDir
+		}
+		planStore = local
+	}
+
+	deleteLockCommand.PlanStore = planStore
+
+	pullClosedExecutor := events.NewInstrumentedPullClosedExecutor(
+		statsScope,
+		logger,
+		&events.PullClosedExecutor{
+			Locker:                   lockingClient,
+			WorkingDir:               workingDir,
+			Database:                 database,
+			PullClosedTemplate:       &events.PullClosedEventTemplate{},
+			LogStreamResourceCleaner: projectCmdOutputHandler,
+			VCSClient:                vcsClient,
+			PlanStore:                planStore,
+		},
+	)
+
 	projectFinder := &events.DefaultProjectFinder{}
 	projectCommandBuilder := events.NewInstrumentedProjectCommandBuilder(
 		logger,
@@ -752,6 +810,8 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		userConfig.AutoDiscoverModeFlag,
 		statsScope,
 		terraformClient,
+		planStore,
+		userConfig.SharePlanDir,
 	)
 	// Enable partial apply on the underlying builder (apply the successfully-planned
 	// projects, skip plan-errored ones) when configured.
@@ -800,7 +860,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			DefaultTFDistribution: defaultTfDistribution,
 			DefaultTFVersion:      defaultTfVersion,
 		},
-		PlanStepRunner:        runtime.NewPlanStepRunner(terraformClient, defaultTfDistribution, defaultTfVersion, commitStatusUpdater, terraformClient),
+		PlanStepRunner:        runtime.NewPlanStepRunner(terraformClient, defaultTfDistribution, defaultTfVersion, commitStatusUpdater, terraformClient, planStore),
 		ShowStepRunner:        showStepRunner,
 		PolicyCheckStepRunner: policyCheckStepRunner,
 		ApplyStepRunner: &runtime.ApplyStepRunner{
@@ -809,6 +869,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			DefaultTFVersion:      defaultTfVersion,
 			CommitStatusUpdater:   commitStatusUpdater,
 			AsyncTFExec:           terraformClient,
+			PlanStore:             planStore,
 		},
 		RunStepRunner: runStepRunner,
 		EnvStepRunner: &runtime.EnvStepRunner{
@@ -822,14 +883,16 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			DefaultTFDistribution: defaultTfDistribution,
 			DefaultTFVersion:      defaultTfVersion,
 		},
-		ImportStepRunner:          runtime.NewImportStepRunner(terraformClient, defaultTfDistribution, defaultTfVersion),
-		StateRmStepRunner:         runtime.NewStateRmStepRunner(terraformClient, defaultTfDistribution, defaultTfVersion),
+		ImportStepRunner:          runtime.NewImportStepRunner(terraformClient, defaultTfDistribution, defaultTfVersion, planStore),
+		StateRmStepRunner:         runtime.NewStateRmStepRunner(terraformClient, defaultTfDistribution, defaultTfVersion, planStore),
 		WorkingDir:                workingDir,
 		Webhooks:                  webhooksManager,
 		WorkingDirLocker:          workingDirLocker,
+		ProjectJobURLGenerator:    router,
 		CommandRequirementHandler: applyRequirementHandler,
 		CancellationTracker:       cancellationTracker,
 		ApplyPlanValidator:        &events.DefaultApplyPlanValidator{PullStatusFetcher: database, LivePullHeadFetcher: livePullHeadFetcher},
+		PlanStore:                 planStore,
 	}
 
 	dbUpdater := &events.DBUpdater{

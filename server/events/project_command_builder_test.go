@@ -5,8 +5,11 @@ package events_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -291,7 +294,7 @@ terraform {
 				userConfig.IncludeGitUntrackedFiles,
 				userConfig.AutoDiscoverMode,
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			ctxs, err := builder.BuildAutoplanCommands(&command.Context{
@@ -392,7 +395,7 @@ func TestDefaultProjectCommandBuilder_OpenTofuWorkspaceDetection(t *testing.T) {
 				false, false,
 				"auto",
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			ctxs, err := builder.BuildAutoplanCommands(&command.Context{
@@ -780,7 +783,7 @@ projects:
 					userConfig.IncludeGitUntrackedFiles,
 					c.AutoDiscoverModeUserCfg,
 					scope,
-					terraformClient,
+					terraformClient, &runtime.LocalPlanStore{},
 				)
 
 				var actCtxs []command.ProjectContext
@@ -876,7 +879,7 @@ func TestDefaultProjectCommandBuilder_BuildPlanCommandsDiscoverAllProjectsSkipsM
 		defaultUserConfig.IncludeGitUntrackedFiles,
 		defaultUserConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildPlanCommands(&command.Context{
@@ -963,7 +966,7 @@ func TestDefaultProjectCommandBuilder_BuildPlanCommandsDiscoverAllProjectsConfig
 		defaultUserConfig.IncludeGitUntrackedFiles,
 		defaultUserConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildPlanCommands(&command.Context{
@@ -1043,7 +1046,7 @@ func TestDefaultProjectCommandBuilder_PathSelectorRespectsBranchFilteredProjects
 		defaultUserConfig.IncludeGitUntrackedFiles,
 		defaultUserConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	mainCtxs, err := builder.BuildPlanCommands(&command.Context{
@@ -1139,7 +1142,7 @@ func TestDefaultProjectCommandBuilder_BuildPlanCommandsDiscoverAllProjectsAPITea
 				defaultUserConfig.IncludeGitUntrackedFiles,
 				defaultUserConfig.AutoDiscoverMode,
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			ctxs, err := builder.BuildPlanCommands(&command.Context{
@@ -1228,7 +1231,7 @@ func TestDefaultProjectCommandBuilder_BuildTargetedCommand_IgnorePaths(t *testin
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	cmdCtx := &command.Context{Log: logger, Scope: scope}
@@ -1315,7 +1318,7 @@ func TestDefaultProjectCommandBuilder_BuildWorkspaceOnlyCommand_IgnorePathsNotSk
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	repo := models.Repo{FullName: "runatlantis/atlantis", Owner: "runatlantis", Name: "atlantis"}
 	cmdCtx := &command.Context{
@@ -1387,7 +1390,7 @@ func TestDefaultProjectCommandBuilder_BuildTargetedNonPlanCommand_IgnorePathsWit
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	repo := models.Repo{FullName: "runatlantis/atlantis", Owner: "runatlantis", Name: "atlantis"}
@@ -1501,7 +1504,7 @@ projects:
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.Github}}
 	ctx := &command.Context{
@@ -1565,7 +1568,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirUsesHeadCommitForRe
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.Github}}
 	ctx := &command.Context{
@@ -1630,7 +1633,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirRespectsGlobProject
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.Github}}
 	ctx := &command.Context{
@@ -1701,7 +1704,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirFailsOpenWhenRemote
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.Github}}
 	ctx := &command.Context{
@@ -1762,7 +1765,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirAllowsAuthoritative
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.Github}}
 	ctx := &command.Context{
@@ -1824,7 +1827,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirUsesGlobalIgnoreWhe
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.AzureDevops}}
 	ctx := &command.Context{
@@ -1899,7 +1902,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirFileDownloadUnsuppo
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.AzureDevops}}
 	ctx := &command.Context{
@@ -1960,7 +1963,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirFileDownloadUnsuppo
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.AzureDevops}}
 	ctx := &command.Context{
@@ -2036,7 +2039,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirMergeCheckoutWithLo
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	ctx := &command.Context{
 		Log:      logger,
@@ -2094,7 +2097,7 @@ func TestDefaultProjectCommandBuilder_ShouldIgnoreTargetedDirMergeCheckoutWithou
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	baseRepo := models.Repo{Owner: "owner", Name: "repo", FullName: "owner/repo", VCSHost: models.VCSHost{Type: models.Github}}
 	ctx := &command.Context{
@@ -2179,7 +2182,7 @@ autodiscover:
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	cmdCtx := &command.Context{Log: logger, Scope: scope}
@@ -2265,7 +2268,7 @@ autodiscover:
 	terraformClient := tfclientmocks.NewMockClient()
 	userConfig := defaultUserConfig
 	locker := events.NewDefaultWorkingDirLocker()
-	unlockPlan, err := locker.TryLock(repo.FullName, pull.Num, events.DefaultWorkspace, events.DefaultRepoRelDir, "", command.Plan)
+	unlockPlan, err := locker.TryLock(repo.FullName, pull.Num, events.DefaultWorkspace, events.DefaultRepoRelDir, "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer unlockPlan()
 
@@ -2292,7 +2295,7 @@ autodiscover:
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	cmdCtx := &command.Context{Log: logger, Scope: scope, Pull: pull, HeadRepo: repo}
 
@@ -2349,7 +2352,7 @@ func TestDefaultProjectCommandBuilder_BuildTargetedApply_MergeCheckoutIgnoredTar
 	terraformClient := tfclientmocks.NewMockClient()
 	userConfig := defaultUserConfig
 	locker := events.NewDefaultWorkingDirLocker()
-	unlockPlan, err := locker.TryLock(repo.FullName, pull.Num, events.DefaultWorkspace, events.DefaultRepoRelDir, "", command.Plan)
+	unlockPlan, err := locker.TryLock(repo.FullName, pull.Num, events.DefaultWorkspace, events.DefaultRepoRelDir, "", command.Plan, events.WorkingDirLockMetadata{})
 	Ok(t, err)
 	defer unlockPlan()
 
@@ -2376,7 +2379,7 @@ func TestDefaultProjectCommandBuilder_BuildTargetedApply_MergeCheckoutIgnoredTar
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 	cmdCtx := &command.Context{Log: logger, Scope: scope, Pull: pull, HeadRepo: repo}
 
@@ -2455,7 +2458,7 @@ projects:
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	cmdCtx := &command.Context{Log: logger, Scope: scope}
@@ -2893,7 +2896,7 @@ projects:
 				userConfig.IncludeGitUntrackedFiles,
 				userConfig.AutoDiscoverMode,
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			var actCtxs []command.ProjectContext
@@ -2998,6 +3001,7 @@ projects:
 		defaultUserConfig.AutoDiscoverMode,
 		scope,
 		tfclientmocks.NewMockClient(),
+		&runtime.LocalPlanStore{},
 	)
 
 	actCtxs, err := builder.BuildPlanCommands(&command.Context{
@@ -3387,7 +3391,7 @@ projects:
 				userConfig.IncludeGitUntrackedFiles,
 				userConfig.AutoDiscoverMode,
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			ctxs, err := builder.BuildPlanCommands(
@@ -3486,7 +3490,7 @@ func TestDefaultProjectCommandBuilder_BuildMultiApply(t *testing.T) {
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildApplyCommands(
@@ -3608,7 +3612,7 @@ func TestDefaultProjectCommandBuilder_BuildMultiApply_IgnorePaths(t *testing.T) 
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildApplyCommands(
@@ -3724,7 +3728,7 @@ autodiscover:
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildApplyCommands(
@@ -3841,7 +3845,7 @@ autodiscover:
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildApplyCommands(
@@ -3934,7 +3938,7 @@ func TestDefaultProjectCommandBuilder_BuildMultiApply_ExplicitPlanInIgnoredPath(
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildApplyCommands(
@@ -4031,7 +4035,7 @@ func TestDefaultProjectCommandBuilder_BuildMultiApply_IgnoreStaleNamedPlanInIgno
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildApplyCommands(
@@ -4123,7 +4127,7 @@ projects:
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctx := &command.Context{
@@ -4212,7 +4216,7 @@ func TestDefaultProjectCommandBuilder_EscapeArgs(t *testing.T) {
 				userConfig.IncludeGitUntrackedFiles,
 				userConfig.AutoDiscoverMode,
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			var actCtxs []command.ProjectContext
@@ -4403,7 +4407,7 @@ projects:
 				userConfig.IncludeGitUntrackedFiles,
 				userConfig.AutoDiscoverMode,
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			actCtxs, err := builder.BuildPlanCommands(
@@ -4548,7 +4552,7 @@ projects:
 			c.IncludeGitUntrackedFiles,
 			userConfig.AutoDiscoverMode,
 			scope,
-			terraformClient,
+			terraformClient, &runtime.LocalPlanStore{},
 		)
 
 		var actCtxs []command.ProjectContext
@@ -4633,7 +4637,7 @@ func TestDefaultProjectCommandBuilder_WithPolicyCheckEnabled_BuildAutoplanComman
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildAutoplanCommands(&command.Context{
@@ -4722,7 +4726,7 @@ func TestDefaultProjectCommandBuilder_BuildVersionCommand(t *testing.T) {
 		userConfig.IncludeGitUntrackedFiles,
 		userConfig.AutoDiscoverMode,
 		scope,
-		terraformClient,
+		terraformClient, &runtime.LocalPlanStore{},
 	)
 
 	ctxs, err := builder.BuildVersionCommands(
@@ -4853,7 +4857,7 @@ func TestDefaultProjectCommandBuilder_BuildPlanCommands_Single_With_RestrictFile
 				userConfig.IncludeGitUntrackedFiles,
 				userConfig.AutoDiscoverMode,
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			var actCtxs []command.ProjectContext
@@ -4965,7 +4969,7 @@ func TestDefaultProjectCommandBuilder_BuildPlanCommands_with_IncludeGitUntracked
 				userConfig.IncludeGitUntrackedFiles,
 				userConfig.AutoDiscoverMode,
 				scope,
-				terraformClient,
+				terraformClient, &runtime.LocalPlanStore{},
 			)
 
 			var actCtxs []command.ProjectContext
@@ -5731,4 +5735,652 @@ func TestValidatePlansForApply_StatusHeadEmptyFailsWhenCurrentHeadKnown(t *testi
 	err := events.ValidatePlansForApply(ctx, plans)
 	Assert(t, err != nil, "expected empty recorded head to fail when current head is known")
 	Assert(t, strings.Contains(err.Error(), "missing a recorded head commit"), "got: %s", err)
+}
+
+// Test that when GetPullDir returns os.ErrNotExist with an external PlanStore,
+// the builder re-clones and calls RestorePlans before discovering plans.
+func TestDefaultProjectCommandBuilder_ExternalPlanStoreRecovery(t *testing.T) {
+	RegisterMockTestingT(t)
+
+	// The directory that will exist after "re-clone".
+	tmpDir := DirStructure(t, map[string]any{
+		"default": map[string]any{
+			"project1": map[string]any{
+				"main.tf":        nil,
+				"default.tfplan": nil,
+			},
+		},
+	})
+	runCmd(t, filepath.Join(tmpDir, "default"), "git", "init")
+
+	workingDir := mocks.NewMockWorkingDir()
+	// First GetPullDir call: directory missing (container restart).
+	// Second GetPullDir call: directory exists after re-clone.
+	When(workingDir.GetPullDir(
+		Any[models.Repo](),
+		Any[models.PullRequest]())).
+		ThenReturn("", os.ErrNotExist).
+		ThenReturn(tmpDir, nil)
+
+	When(workingDir.Clone(
+		Any[logging.SimpleLogging](),
+		Any[models.Repo](),
+		Any[models.PullRequest](),
+		Any[string]())).
+		ThenReturn(tmpDir, nil)
+
+	When(workingDir.GetWorkingDir(
+		Any[models.Repo](),
+		Any[models.PullRequest](),
+		Any[string]())).
+		ThenReturn(tmpDir, nil)
+
+	logger := logging.NewNoopLogger(t)
+	userConfig := defaultUserConfig
+	globalCfgArgs := valid.GlobalCfgArgs{}
+	scope := metricstest.NewLoggingScope(t, logger, "atlantis")
+	terraformClient := tfclientmocks.NewMockClient()
+
+	restoreCalled := false
+	planStore := &mockExternalPlanStore{
+		workspaces: []string{"default"},
+		restoreFn: func(pullDir, owner, repo string, pullNum int) error {
+			restoreCalled = true
+			return nil
+		},
+	}
+
+	builder := events.NewProjectCommandBuilder(
+		false,
+		&config.ParserValidator{},
+		&events.DefaultProjectFinder{},
+		nil,
+		workingDir,
+		events.NewDefaultWorkingDirLocker(),
+		valid.NewGlobalCfgFromArgs(globalCfgArgs),
+		&events.DefaultPendingPlanFinder{},
+		&events.CommentParser{ExecutableName: "atlantis"},
+		userConfig.SkipCloneNoChanges,
+		userConfig.EnableRegExpCmd,
+		userConfig.EnableAutoMerge,
+		userConfig.EnableParallelPlan,
+		userConfig.EnableParallelApply,
+		userConfig.AutoDetectModuleFiles,
+		userConfig.AutoplanFileList,
+		userConfig.RestrictFileList,
+		userConfig.DefaultTFDistribution,
+		userConfig.SilenceNoProjects,
+		userConfig.IncludeGitUntrackedFiles,
+		userConfig.AutoDiscoverMode,
+		scope,
+		terraformClient,
+		planStore,
+	)
+
+	ctxs, err := builder.BuildApplyCommands(
+		&command.Context{
+			Log:   logger,
+			Scope: scope,
+			PullStatus: &models.PullStatus{
+				Projects: []models.ProjectStatus{
+					{
+						RepoRelDir: "project1",
+						Workspace:  "default",
+						Status:     models.PlannedPlanStatus,
+					},
+				},
+			},
+		},
+		&events.CommentCommand{
+			RepoRelDir:  "",
+			Flags:       nil,
+			Name:        command.Apply,
+			Verbose:     false,
+			Workspace:   "",
+			ProjectName: "",
+		})
+	Ok(t, err)
+	Assert(t, restoreCalled, "expected RestorePlans to be called")
+	Equals(t, 1, len(ctxs))
+}
+
+// mockExternalPlanStore satisfies the runtime.PlanStore interface for testing
+// the external plan store recovery path.
+type mockExternalPlanStore struct {
+	workspaces []string
+	restoreFn  func(pullDir, owner, repo string, pullNum int) error
+}
+
+func (m *mockExternalPlanStore) Save(ctx command.ProjectContext, planPath string) error {
+	return nil
+}
+func (m *mockExternalPlanStore) Load(ctx command.ProjectContext, planPath string) error {
+	return nil
+}
+func (m *mockExternalPlanStore) Remove(ctx command.ProjectContext, planPath string) error {
+	return nil
+}
+func (m *mockExternalPlanStore) ListWorkspaces(owner, repo string, pullNum int) ([]string, error) {
+	return m.workspaces, nil
+}
+func (m *mockExternalPlanStore) RestorePlans(pullDir, owner, repo string, pullNum int) error {
+	// Capability probe uses empty pullDir; real stores no-op that path.
+	if pullDir == "" {
+		return nil
+	}
+	if m.restoreFn != nil {
+		return m.restoreFn(pullDir, owner, repo, pullNum)
+	}
+	return nil
+}
+func (m *mockExternalPlanStore) DeleteForPull(owner, repo string, pullNum int) error {
+	return nil
+}
+func (m *mockExternalPlanStore) DeletePlanForProject(owner, repo string, pullNum int, workspace, repoRelDir, projectName string) error {
+	return nil
+}
+
+// fakeWorkingDir mimics the parts of FileWorkspace.Clone that matter for the
+// regression test. Importantly, Clone simulates forceClone behavior — it wipes
+// the workspace dir before recreating it. This is exactly what caused the
+// pre-fix bug: if RestorePlans ran before Clone for a workspace, Clone would
+// blow away the freshly restored plans.
+type fakeWorkingDir struct {
+	mocks.MockWorkingDir // embedded so unused methods don't need stubs
+	pullDir              string
+	cloneCalls           []string
+	// onClone runs after a workspace is cloned, to seed files a real clone
+	// would have brought with it (e.g. atlantis.yaml).
+	onClone func(workspace, dir string) error
+}
+
+func (f *fakeWorkingDir) Clone(_ logging.SimpleLogging, _ models.Repo, _ models.PullRequest, workspace string) (string, error) {
+	f.cloneCalls = append(f.cloneCalls, workspace)
+	workspaceDir := filepath.Join(f.pullDir, workspace)
+	// Wipe and recreate (mimics forceClone) — this is the behavior that wiped
+	// restored plans before the fix.
+	if err := os.RemoveAll(workspaceDir); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(workspaceDir, 0o700); err != nil {
+		return "", err
+	}
+	// Initialize a real git repo so PendingPlanFinder's `git ls-files --others`
+	// can pick up restored .tfplan files as untracked.
+	if err := exec.Command("git", "-C", workspaceDir, "init").Run(); err != nil {
+		return "", err
+	}
+	if f.onClone != nil {
+		if err := f.onClone(workspace, workspaceDir); err != nil {
+			return "", err
+		}
+	}
+	return workspaceDir, nil
+}
+
+func (f *fakeWorkingDir) GetPullDir(_ models.Repo, _ models.PullRequest) (string, error) {
+	if _, err := os.Stat(f.pullDir); err != nil {
+		return "", err
+	}
+	return f.pullDir, nil
+}
+
+func (f *fakeWorkingDir) GetWorkingDir(_ models.Repo, _ models.PullRequest, workspace string) (string, error) {
+	workspaceDir := filepath.Join(f.pullDir, workspace)
+	if _, err := os.Stat(workspaceDir); err != nil {
+		return "", err
+	}
+	return workspaceDir, nil
+}
+
+// Test that plans restored for non-default workspaces survive the Clone +
+// RestorePlans flow. This is the regression test for the bug where
+// cloneMissingWorkspaces ran after RestorePlans and wiped non-default
+// workspace plans via forceClone's os.RemoveAll.
+func TestDefaultProjectCommandBuilder_ExternalPlanStoreRecovery_MultiWorkspace(t *testing.T) {
+	RegisterMockTestingT(t)
+
+	pullDir := t.TempDir()
+	workingDir := &fakeWorkingDir{
+		MockWorkingDir: *mocks.NewMockWorkingDir(),
+		pullDir:        pullDir,
+	}
+
+	logger := logging.NewNoopLogger(t)
+	userConfig := defaultUserConfig
+	globalCfgArgs := valid.GlobalCfgArgs{}
+	scope := metricstest.NewLoggingScope(t, logger, "atlantis")
+	terraformClient := tfclientmocks.NewMockClient()
+
+	// restoreFn writes a .tfplan into each workspace dir. With the bug,
+	// Clone for "staging" would run AFTER this and wipe the plan via
+	// os.RemoveAll. With the fix, Clone runs for both workspaces before
+	// this callback fires, so the plans land in already-initialized dirs.
+	planStore := &mockExternalPlanStore{
+		workspaces: []string{"default", "staging"},
+		restoreFn: func(pullDirArg, _, _ string, _ int) error {
+			for _, ws := range []string{"default", "staging"} {
+				projDir := filepath.Join(pullDirArg, ws, "project1")
+				if err := os.MkdirAll(projDir, 0o700); err != nil {
+					return err
+				}
+				planFile := filepath.Join(projDir, ws+".tfplan")
+				if err := os.WriteFile(planFile, []byte("plan-data"), 0o600); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+
+	builder := events.NewProjectCommandBuilder(
+		false,
+		&config.ParserValidator{},
+		&events.DefaultProjectFinder{},
+		nil,
+		workingDir,
+		events.NewDefaultWorkingDirLocker(),
+		valid.NewGlobalCfgFromArgs(globalCfgArgs),
+		&events.DefaultPendingPlanFinder{},
+		&events.CommentParser{ExecutableName: "atlantis"},
+		userConfig.SkipCloneNoChanges,
+		userConfig.EnableRegExpCmd,
+		userConfig.EnableAutoMerge,
+		userConfig.EnableParallelPlan,
+		userConfig.EnableParallelApply,
+		userConfig.AutoDetectModuleFiles,
+		userConfig.AutoplanFileList,
+		userConfig.RestrictFileList,
+		userConfig.DefaultTFDistribution,
+		userConfig.SilenceNoProjects,
+		userConfig.IncludeGitUntrackedFiles,
+		userConfig.AutoDiscoverMode,
+		scope,
+		terraformClient,
+		planStore,
+	)
+
+	// Trigger the missing-pullDir path: delete pullDir so the first
+	// GetPullDir errors with ErrNotExist.
+	Ok(t, os.RemoveAll(pullDir))
+
+	ctxs, err := builder.BuildApplyCommands(
+		&command.Context{
+			Log:   logger,
+			Scope: scope,
+			PullStatus: &models.PullStatus{
+				Projects: []models.ProjectStatus{
+					{RepoRelDir: "project1", Workspace: "default", Status: models.PlannedPlanStatus},
+					{RepoRelDir: "project1", Workspace: "staging", Status: models.PlannedPlanStatus},
+				},
+			},
+		},
+		&events.CommentCommand{Name: command.Apply})
+	Ok(t, err)
+
+	// Both workspaces must be cloned (in the order returned by ListWorkspaces).
+	Equals(t, []string{"default", "staging"}, workingDir.cloneCalls)
+
+	// Both plans must survive — the apply command builder discovers them via
+	// PendingPlanFinder. With the original bug, staging's plan would be wiped
+	// by the late Clone and only the default ctx would come back.
+	Equals(t, 2, len(ctxs))
+	gotWorkspaces := map[string]bool{}
+	for _, c := range ctxs {
+		gotWorkspaces[c.Workspace] = true
+	}
+	Assert(t, gotWorkspaces["default"], "expected default workspace plan to survive")
+	Assert(t, gotWorkspaces["staging"], "expected staging workspace plan to survive")
+
+	// Verify the staging plan file bytes survived — this is the exact
+	// regression: under the old code, Clone(staging) after RestorePlans
+	// would RemoveAll the staging dir and the plan file would be gone.
+	stagingPlan, err := os.ReadFile(filepath.Join(pullDir, "staging", "project1", "staging.tfplan"))
+	Ok(t, err)
+	Equals(t, "plan-data", string(stagingPlan))
+}
+
+// When --share-plan-dir points somewhere other than --data-dir, an external
+// plan store must restore into the plan store tree, because that is the only
+// place PendingPlanFinder looks. Restoring into the clone pull dir instead
+// leaves the plans undiscoverable and apply reports "no plans found".
+func TestDefaultProjectCommandBuilder_ExternalPlanStoreRecovery_SeparateSharePlanDir(t *testing.T) {
+	RegisterMockTestingT(t)
+
+	repo := models.Repo{FullName: "owner/repo"}
+	pull := models.PullRequest{Num: 7, BaseRepo: repo}
+
+	dataDir := t.TempDir()
+	sharePlanDir := t.TempDir()
+	pullDir := filepath.Join(dataDir, "repos", "owner", "repo", "7")
+	workingDir := &fakeWorkingDir{
+		MockWorkingDir: *mocks.NewMockWorkingDir(),
+		pullDir:        pullDir,
+	}
+
+	logger := logging.NewNoopLogger(t)
+	userConfig := defaultUserConfig
+	globalCfgArgs := valid.GlobalCfgArgs{}
+	scope := metricstest.NewLoggingScope(t, logger, "atlantis")
+	terraformClient := tfclientmocks.NewMockClient()
+
+	// Record where the store was told to restore, and write the plans there.
+	var restoreDir string
+	planStore := &mockExternalPlanStore{
+		workspaces: []string{"default", "staging"},
+		restoreFn: func(pullDirArg, _, _ string, _ int) error {
+			restoreDir = pullDirArg
+			for _, ws := range []string{"default", "staging"} {
+				projDir := filepath.Join(pullDirArg, ws, "project1")
+				if err := os.MkdirAll(projDir, 0o700); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(projDir, ws+".tfplan"), []byte("plan-data"), 0o600); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+
+	builder := events.NewProjectCommandBuilder(
+		false,
+		&config.ParserValidator{},
+		&events.DefaultProjectFinder{},
+		nil,
+		workingDir,
+		events.NewDefaultWorkingDirLocker(),
+		valid.NewGlobalCfgFromArgs(globalCfgArgs),
+		&events.DefaultPendingPlanFinder{DataDir: dataDir, LocalSharePlanDir: sharePlanDir},
+		&events.CommentParser{ExecutableName: "atlantis"},
+		userConfig.SkipCloneNoChanges,
+		userConfig.EnableRegExpCmd,
+		userConfig.EnableAutoMerge,
+		userConfig.EnableParallelPlan,
+		userConfig.EnableParallelApply,
+		userConfig.AutoDetectModuleFiles,
+		userConfig.AutoplanFileList,
+		userConfig.RestrictFileList,
+		userConfig.DefaultTFDistribution,
+		userConfig.SilenceNoProjects,
+		userConfig.IncludeGitUntrackedFiles,
+		userConfig.AutoDiscoverMode,
+		scope,
+		terraformClient,
+		planStore,
+	)
+	builder.LocalSharePlanDir = sharePlanDir
+
+	// Trigger the missing-pullDir path.
+	Ok(t, os.RemoveAll(pullDir))
+
+	ctxs, err := builder.BuildApplyCommands(
+		&command.Context{
+			Log:   logger,
+			Scope: scope,
+			Pull:  pull,
+			PullStatus: &models.PullStatus{
+				Projects: []models.ProjectStatus{
+					{RepoRelDir: "project1", Workspace: "default", Status: models.PlannedPlanStatus},
+					{RepoRelDir: "project1", Workspace: "staging", Status: models.PlannedPlanStatus},
+				},
+			},
+		},
+		&events.CommentCommand{Name: command.Apply})
+	Ok(t, err)
+
+	// Restore must target the plan store tree, not the clone pull dir.
+	Equals(t, filepath.Join(sharePlanDir, "repos", "owner", "repo", "7"), restoreDir)
+
+	// Both restored plans must then be discoverable.
+	Equals(t, 2, len(ctxs))
+	gotWorkspaces := map[string]bool{}
+	for _, c := range ctxs {
+		gotWorkspaces[c.Workspace] = true
+		Equals(t, sharePlanDir, c.LocalSharePlanDir)
+	}
+	Assert(t, gotWorkspaces["default"], "expected default workspace plan to be found")
+	Assert(t, gotWorkspaces["staging"], "expected staging workspace plan to be found")
+}
+
+// Recovery must work when the store only holds plans for non-default
+// workspaces. The default workspace is still needed as the source of truth for
+// atlantis.yaml, so it has to be cloned even though it has no stored plans.
+func TestDefaultProjectCommandBuilder_ExternalPlanStoreRecovery_OnlyNonDefaultWorkspace(t *testing.T) {
+	RegisterMockTestingT(t)
+
+	pullDir := t.TempDir()
+	workingDir := &fakeWorkingDir{
+		MockWorkingDir: *mocks.NewMockWorkingDir(),
+		pullDir:        pullDir,
+	}
+
+	logger := logging.NewNoopLogger(t)
+	userConfig := defaultUserConfig
+	globalCfgArgs := valid.GlobalCfgArgs{}
+	scope := metricstest.NewLoggingScope(t, logger, "atlantis")
+	terraformClient := tfclientmocks.NewMockClient()
+
+	planStore := &mockExternalPlanStore{
+		workspaces: []string{"staging"},
+		restoreFn: func(pullDirArg, _, _ string, _ int) error {
+			projDir := filepath.Join(pullDirArg, "staging", "project1")
+			if err := os.MkdirAll(projDir, 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(projDir, "staging.tfplan"), []byte("plan-data"), 0o600)
+		},
+	}
+
+	builder := events.NewProjectCommandBuilder(
+		false,
+		&config.ParserValidator{},
+		&events.DefaultProjectFinder{},
+		nil,
+		workingDir,
+		events.NewDefaultWorkingDirLocker(),
+		valid.NewGlobalCfgFromArgs(globalCfgArgs),
+		&events.DefaultPendingPlanFinder{},
+		&events.CommentParser{ExecutableName: "atlantis"},
+		userConfig.SkipCloneNoChanges,
+		userConfig.EnableRegExpCmd,
+		userConfig.EnableAutoMerge,
+		userConfig.EnableParallelPlan,
+		userConfig.EnableParallelApply,
+		userConfig.AutoDetectModuleFiles,
+		userConfig.AutoplanFileList,
+		userConfig.RestrictFileList,
+		userConfig.DefaultTFDistribution,
+		userConfig.SilenceNoProjects,
+		userConfig.IncludeGitUntrackedFiles,
+		userConfig.AutoDiscoverMode,
+		scope,
+		terraformClient,
+		planStore,
+	)
+
+	Ok(t, os.RemoveAll(pullDir))
+
+	ctxs, err := builder.BuildApplyCommands(
+		&command.Context{
+			Log:   logger,
+			Scope: scope,
+			PullStatus: &models.PullStatus{
+				Projects: []models.ProjectStatus{
+					{RepoRelDir: "project1", Workspace: "staging", Status: models.PlannedPlanStatus},
+				},
+			},
+		},
+		&events.CommentCommand{Name: command.Apply})
+	Ok(t, err)
+
+	Equals(t, 1, len(ctxs))
+	Equals(t, "staging", ctxs[0].Workspace)
+}
+
+// A separate --share-plan-dir already outlives the checkout, so losing the
+// working dir is recoverable without any external store: the plans are still on
+// disk and the workspaces just need re-cloning. Exercised end to end with a real
+// FileWorkspace because recovery depends on the clone not wiping the plans.
+func TestDefaultProjectCommandBuilder_LocalPlanStoreRecovery_SeparateSharePlanDir(t *testing.T) {
+	RegisterMockTestingT(t)
+
+	repoDir := initRepo(t)
+	dataDir := t.TempDir()
+	sharePlanDir := t.TempDir()
+	logger := logging.NewNoopLogger(t)
+
+	repo := models.Repo{FullName: "owner/repo", Owner: "owner", Name: "repo"}
+	pull := models.PullRequest{Num: 3, BaseRepo: repo, HeadBranch: "branch", BaseBranch: "main"}
+
+	workingDir := &events.FileWorkspace{
+		DataDir:                     dataDir,
+		LocalSharePlanDir:           sharePlanDir,
+		CheckoutMerge:               false,
+		TestingOverrideHeadCloneURL: fmt.Sprintf("file://%s", repoDir),
+		GpgNoSigningEnabled:         true,
+	}
+
+	// Plans survived the restart in the plan store; the checkout did not.
+	for _, ws := range []string{"default", "staging"} {
+		createPlanFile(t, filepath.Join(sharePlanDir, "repos", "owner", "repo", "3", ws, "project1", ws+".tfplan"))
+	}
+	assertPathMissing(t, filepath.Join(dataDir, "repos", "owner", "repo", "3"))
+
+	userConfig := defaultUserConfig
+	scope := metricstest.NewLoggingScope(t, logger, "atlantis")
+
+	builder := events.NewProjectCommandBuilder(
+		false,
+		&config.ParserValidator{},
+		&events.DefaultProjectFinder{},
+		nil,
+		workingDir,
+		events.NewDefaultWorkingDirLocker(),
+		valid.NewGlobalCfgFromArgs(valid.GlobalCfgArgs{}),
+		&events.DefaultPendingPlanFinder{DataDir: dataDir, LocalSharePlanDir: sharePlanDir},
+		&events.CommentParser{ExecutableName: "atlantis"},
+		userConfig.SkipCloneNoChanges,
+		userConfig.EnableRegExpCmd,
+		userConfig.EnableAutoMerge,
+		userConfig.EnableParallelPlan,
+		userConfig.EnableParallelApply,
+		userConfig.AutoDetectModuleFiles,
+		userConfig.AutoplanFileList,
+		userConfig.RestrictFileList,
+		userConfig.DefaultTFDistribution,
+		userConfig.SilenceNoProjects,
+		userConfig.IncludeGitUntrackedFiles,
+		userConfig.AutoDiscoverMode,
+		scope,
+		tfclientmocks.NewMockClient(),
+		&runtime.LocalPlanStore{SeparatePlanDir: sharePlanDir},
+	)
+	builder.LocalSharePlanDir = sharePlanDir
+
+	ctxs, err := builder.BuildApplyCommands(
+		&command.Context{
+			Log:      logger,
+			Scope:    scope,
+			Pull:     pull,
+			HeadRepo: repo,
+			PullStatus: &models.PullStatus{
+				// Recovery still has to satisfy the staleness checks, which
+				// compare the recorded pull against the live one.
+				Pull: pull,
+				Projects: []models.ProjectStatus{
+					{RepoRelDir: "project1", Workspace: "default", Status: models.PlannedPlanStatus},
+					{RepoRelDir: "project1", Workspace: "staging", Status: models.PlannedPlanStatus},
+				},
+			},
+		},
+		&events.CommentCommand{Name: command.Apply})
+	Ok(t, err)
+
+	Equals(t, 2, len(ctxs))
+	gotWorkspaces := map[string]bool{}
+	for _, c := range ctxs {
+		gotWorkspaces[c.Workspace] = true
+		Equals(t, sharePlanDir, c.LocalSharePlanDir)
+	}
+	Assert(t, gotWorkspaces["default"], "expected default workspace plan to be recovered")
+	Assert(t, gotWorkspaces["staging"], "expected staging workspace plan to be recovered")
+}
+
+// `apply -p name` carries no workspace, so recovery can only clone the default
+// workspace up front — a project's workspace comes from atlantis.yaml, which
+// can't be read until that clone exists. A project pinned to a non-default
+// workspace must still get a checkout, or apply fails on the missing dir.
+func TestDefaultProjectCommandBuilder_TargetedApplyRecovery_NonDefaultWorkspace(t *testing.T) {
+	RegisterMockTestingT(t)
+
+	repo := models.Repo{FullName: "owner/repo", Owner: "owner", Name: "repo"}
+	pull := models.PullRequest{Num: 5, BaseRepo: repo}
+
+	pullDir := t.TempDir()
+	atlantisYAML := `version: 3
+projects:
+- name: myproject
+  dir: project1
+  workspace: staging
+`
+	workingDir := &fakeWorkingDir{
+		MockWorkingDir: *mocks.NewMockWorkingDir(),
+		pullDir:        pullDir,
+		onClone: func(_, dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, "project1"), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, "atlantis.yaml"), []byte(atlantisYAML), 0o600)
+		},
+	}
+
+	logger := logging.NewNoopLogger(t)
+	userConfig := defaultUserConfig
+	scope := metricstest.NewLoggingScope(t, logger, "atlantis")
+
+	builder := events.NewProjectCommandBuilder(
+		false,
+		&config.ParserValidator{},
+		&events.DefaultProjectFinder{},
+		nil,
+		workingDir,
+		events.NewDefaultWorkingDirLocker(),
+		valid.NewGlobalCfgFromArgs(valid.GlobalCfgArgs{AllowAllRepoSettings: true}),
+		&events.DefaultPendingPlanFinder{},
+		&events.CommentParser{ExecutableName: "atlantis"},
+		userConfig.SkipCloneNoChanges,
+		userConfig.EnableRegExpCmd,
+		userConfig.EnableAutoMerge,
+		userConfig.EnableParallelPlan,
+		userConfig.EnableParallelApply,
+		userConfig.AutoDetectModuleFiles,
+		userConfig.AutoplanFileList,
+		userConfig.RestrictFileList,
+		userConfig.DefaultTFDistribution,
+		userConfig.SilenceNoProjects,
+		userConfig.IncludeGitUntrackedFiles,
+		userConfig.AutoDiscoverMode,
+		scope,
+		tfclientmocks.NewMockClient(),
+		&mockExternalPlanStore{},
+	)
+
+	// Working dir is gone, so the targeted apply has to recover.
+	Ok(t, os.RemoveAll(pullDir))
+
+	ctxs, err := builder.BuildApplyCommands(
+		&command.Context{
+			Log:      logger,
+			Scope:    scope,
+			Pull:     pull,
+			HeadRepo: repo,
+		},
+		&events.CommentCommand{Name: command.Apply, ProjectName: "myproject"})
+	Ok(t, err)
+
+	Equals(t, 1, len(ctxs))
+	Equals(t, "staging", ctxs[0].Workspace)
+	Assert(t, slices.Contains(workingDir.cloneCalls, "staging"),
+		"expected the project's workspace to be cloned, cloned: %v", workingDir.cloneCalls)
 }

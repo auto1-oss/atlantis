@@ -41,6 +41,7 @@ type UserConfig struct {
 	CheckoutDepth               int    `mapstructure:"checkout-depth"`
 	CheckoutStrategy            string `mapstructure:"checkout-strategy"`
 	DataDir                     string `mapstructure:"data-dir"`
+	SharePlanDir                string `mapstructure:"share-plan-dir"`
 	DisableApplyAll             bool   `mapstructure:"disable-apply-all"`
 	DisableAutoplan             bool   `mapstructure:"disable-autoplan"`
 	DisableAutoplanLabel        string `mapstructure:"disable-autoplan-label"`
@@ -102,6 +103,7 @@ type UserConfig struct {
 	PendingApplyStatus               bool   `mapstructure:"pending-apply-status"`
 	StatsNamespace                   string `mapstructure:"stats-namespace"`
 	PlanDrafts                       bool   `mapstructure:"allow-draft-prs"`
+	EnableExternalStores             bool   `mapstructure:"enable-external-stores"`
 	Port                             int    `mapstructure:"port"`
 	QuietPolicyChecks                bool   `mapstructure:"quiet-policy-checks"`
 	RedisDB                          int    `mapstructure:"redis-db"`
