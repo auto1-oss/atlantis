@@ -133,6 +133,16 @@ workflows:
           extra_args: ["-lock=false"]
 ```
 
+::: tip Note
+Each entry in `extra_args` is passed to Terraform as a single argument. It is not
+interpreted by a shell, so shell operators (`;`, `&&`, `|`, redirections),
+globbing and word splitting do not apply. Environment variable references such
+as `$WORKSPACE`, `$DIR` and `$ATLANTIS_TERRAFORM_VERSION` are still expanded.
+
+If you need shell behaviour, use a `run` step, which is executed with a shell by
+design.
+:::
+
 If [policy checking](policy-checking.md#how-it-works) is enabled, `extra_args` can also be used to change the default behaviour of conftest.
 
 ```yaml
@@ -270,6 +280,11 @@ commands. We can use this functionality to enable
 
 You can either use your repo's `atlantis.yaml` file or the Atlantis server's `repos.yaml` file.
 
+Atlantis selects each project's Terraform distribution and version. In the workflows below,
+`ATLANTIS_TERRAFORM_DISTRIBUTION` expands to the executable prefix (`terraform` or `tofu`), and combining it with
+`ATLANTIS_TERRAFORM_VERSION` points Terragrunt at the same versioned binary. This also supports repositories containing
+both Terraform and OpenTofu projects.
+
 Given a directory structure:
 
 ```plain
@@ -285,7 +300,6 @@ If using the server `repos.yaml` file, you would use the following config:
 
 ```yaml
 # repos.yaml
-# Specify TG_TF_PATH environment variable to accommodate setting --default-tf-version
 # Generate json plan via terragrunt for policy checks
 repos:
 - id: "/.*/"
@@ -296,7 +310,7 @@ workflows:
       steps:
       - env:
           name: TG_TF_PATH
-          command: 'echo "terraform${ATLANTIS_TERRAFORM_VERSION}"'
+          command: 'echo "${ATLANTIS_TERRAFORM_DISTRIBUTION}${ATLANTIS_TERRAFORM_VERSION}"'
       - env:
           # Reduce Terraform suggestion output
           name: TF_IN_AUTOMATION
@@ -311,7 +325,7 @@ workflows:
       steps:
       - env:
           name: TG_TF_PATH
-          command: 'echo "terraform${ATLANTIS_TERRAFORM_VERSION}"'
+          command: 'echo "${ATLANTIS_TERRAFORM_DISTRIBUTION}${ATLANTIS_TERRAFORM_VERSION}"'
       - env:
           # Reduce Terraform suggestion output
           name: TF_IN_AUTOMATION
@@ -321,7 +335,7 @@ workflows:
       steps:
       - env:
           name: TG_TF_PATH
-          command: 'echo "terraform${DEFAULT_TERRAFORM_VERSION}"'
+          command: 'echo "${ATLANTIS_TERRAFORM_DISTRIBUTION}${ATLANTIS_TERRAFORM_VERSION}"'
       - env:
           name: TF_VAR_author
           command: 'git show -s --format="%ae" $HEAD_COMMIT'
@@ -331,7 +345,7 @@ workflows:
       steps:
       - env:
           name: TG_TF_PATH
-          command: 'echo "terraform${DEFAULT_TERRAFORM_VERSION}"'
+          command: 'echo "${ATLANTIS_TERRAFORM_DISTRIBUTION}${ATLANTIS_TERRAFORM_VERSION}"'
       # Allow for state removals as not supported for Terraform wrappers by default
       - run: terragrunt state rm $(printf '%s' $COMMENT_ARGS | sed 's/,/ /' | tr -d '\\')
 ```
@@ -351,7 +365,7 @@ workflows:
       steps:
       - env:
           name: TG_TF_PATH
-          command: 'echo "terraform${ATLANTIS_TERRAFORM_VERSION}"'
+          command: 'echo "${ATLANTIS_TERRAFORM_DISTRIBUTION}${ATLANTIS_TERRAFORM_VERSION}"'
       - env:
           # Reduce Terraform suggestion output
           name: TF_IN_AUTOMATION
@@ -363,7 +377,7 @@ workflows:
       steps:
       - env:
           name: TG_TF_PATH
-          command: 'echo "terraform${ATLANTIS_TERRAFORM_VERSION}"'
+          command: 'echo "${ATLANTIS_TERRAFORM_DISTRIBUTION}${ATLANTIS_TERRAFORM_VERSION}"'
       - env:
           # Reduce Terraform suggestion output
           name: TF_IN_AUTOMATION
@@ -643,6 +657,11 @@ Full example, filtering output and masking matching text (`mySecret: "foo"` -> `
   * `PLANFILE` - Absolute path to the location where Atlantis expects the plan to
       either be generated (by plan) or already exist (if running apply). Can be used to
       override the built-in `plan`/`apply` commands, ex. `run: terraform plan -out $PLANFILE`.
+      A workflow whose `plan` and `apply` are both made up entirely of custom `run` steps
+      may write its plan to a path of its own choosing instead of `$PLANFILE`. Atlantis
+      does not require, hash, or delete a plan artifact for such a workflow; it still
+      validates the project's recorded plan state before running `apply`. As soon as a
+      workflow uses the built-in `plan` or `apply` step, the plan must be at `$PLANFILE`.
   * `SHOWFILE` - Absolute path to the location where Atlantis expects the plan in json format to
       either be generated (by show) or already exist (if running policy checks). Can be used to
       override the built-in `plan`/`apply` commands, ex. `run: terraform show -json $PLANFILE > $SHOWFILE`.
