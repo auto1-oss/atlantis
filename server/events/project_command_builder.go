@@ -1352,6 +1352,9 @@ func (p *DefaultProjectCommandBuilder) buildAllProjectCommandsByPlan(ctx *comman
 		if p.WorkingDirLocker != nil {
 			hasActivePlan = p.WorkingDirLocker.HasCommandLock(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, command.Plan)
 		}
+		if p.AllowPartialApply {
+			plans = DropPlanErroredPlans(ctx, plans)
+		}
 		if err := ValidatePlansForApplyWithActivePlan(ctx, plans, hasActivePlan, p.AllowPartialApply); err != nil {
 			return nil, err
 		}
@@ -1391,6 +1394,28 @@ func (p *DefaultProjectCommandBuilder) buildAllProjectCommandsByPlan(ctx *comman
 	})
 
 	return cmds, nil
+}
+
+// DropPlanErroredPlans removes discovered plan files belonging to projects whose
+// recorded status is plan_errored. A failed plan can leave a stale .tfplan on disk
+// from an earlier successful run, and applying it would apply outdated changes.
+// Dropping it here keeps the successfully planned projects applicable under
+// --allow-partial-apply; the apply runner reports the dropped projects as skipped.
+func DropPlanErroredPlans(ctx *command.Context, plans []PendingPlan) []PendingPlan {
+	if ctx.PullStatus == nil {
+		return plans
+	}
+	filtered := make([]PendingPlan, 0, len(plans))
+	for _, plan := range plans {
+		proj := findProjectInPullStatus(ctx.PullStatus, plan.Workspace, plan.RepoRelDir, plan.ProjectName)
+		if proj != nil && proj.Status == models.ErroredPlanStatus {
+			ctx.Log.Info("partial apply: skipping dir %q workspace %q project %q because its plan errored; ignoring stale plan file",
+				plan.RepoRelDir, plan.Workspace, plan.ProjectName)
+			continue
+		}
+		filtered = append(filtered, plan)
+	}
+	return filtered
 }
 
 // ValidatePlansForApply ensures discovered plans are valid for the current PR head.
