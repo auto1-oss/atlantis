@@ -5282,6 +5282,57 @@ func TestValidatePlansForApply_PartialApplySkipsErroredPlan(t *testing.T) {
 	Ok(t, err)
 }
 
+func TestDropPlanErroredPlans_StalePlanFileForErroredPlan(t *testing.T) {
+	// A project whose plan errored can still have a .tfplan on disk from an earlier
+	// successful plan. Without filtering, that discovered plan file fails the whole
+	// apply even with partial apply enabled.
+	ctx := &command.Context{
+		Log:  logging.NewNoopLogger(t),
+		Pull: models.PullRequest{HeadCommit: "abc123"},
+		PullStatus: &models.PullStatus{
+			Pull: models.PullRequest{HeadCommit: "abc123"},
+			Projects: []models.ProjectStatus{
+				{RepoRelDir: "proj1", Workspace: "default", Status: models.PlannedPlanStatus},
+				{RepoRelDir: "proj2", Workspace: "prod", Status: models.ErroredPlanStatus},
+			},
+		},
+	}
+	plans := []events.PendingPlan{
+		{RepoRelDir: "proj1", Workspace: "default"},
+		{RepoRelDir: "proj2", Workspace: "prod"},
+	}
+
+	// Unfiltered, the stale plan file blocks the entire apply even with partial apply.
+	err := events.ValidatePlansForApplyWithActivePlan(ctx, plans, false, true)
+	Assert(t, err != nil, "expected stale plan file for errored plan to fail validation unfiltered")
+	Assert(t, strings.Contains(err.Error(), "plan_errored"), "got: %s", err)
+
+	// Filtering drops only the errored project, leaving the good plan applicable.
+	filtered := events.DropPlanErroredPlans(ctx, plans)
+	Equals(t, 1, len(filtered))
+	Equals(t, "proj1", filtered[0].RepoRelDir)
+	Ok(t, events.ValidatePlansForApplyWithActivePlan(ctx, filtered, false, true))
+}
+
+func TestDropPlanErroredPlans_NoopWhenPartialApplyTargetsAbsent(t *testing.T) {
+	ctx := &command.Context{
+		Log:  logging.NewNoopLogger(t),
+		Pull: models.PullRequest{HeadCommit: "abc123"},
+		PullStatus: &models.PullStatus{
+			Pull: models.PullRequest{HeadCommit: "abc123"},
+			Projects: []models.ProjectStatus{
+				{RepoRelDir: "proj1", Workspace: "default", Status: models.PlannedPlanStatus},
+			},
+		},
+	}
+	plans := []events.PendingPlan{{RepoRelDir: "proj1", Workspace: "default"}}
+	Equals(t, 1, len(events.DropPlanErroredPlans(ctx, plans)))
+
+	// A nil pull status must leave the list untouched for the validator to reject.
+	bare := &command.Context{Log: logging.NewNoopLogger(t)}
+	Equals(t, 1, len(events.DropPlanErroredPlans(bare, plans)))
+}
+
 func TestValidatePlansForApply_PartialApplyStillRequiresPlanFileForPlannedStatus(t *testing.T) {
 	// A project recorded as Planned but with no discovered plan file must still fail,
 	// even with partial apply — partial apply only tolerates plan_errored projects.
