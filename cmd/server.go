@@ -154,6 +154,10 @@ const (
 	UseTFPluginCache                 = "use-tf-plugin-cache"
 	VarFileAllowlistFlag             = "var-file-allowlist"
 	VCSStatusName                    = "vcs-status-name"
+	VaultAddrFlag                    = "vault-addr"
+	VaultAppRoleMountPathFlag        = "vault-approle-mount-path"
+	VaultAppRoleRoleIDFlag           = "vault-approle-role-id"
+	VaultAppRoleSecretIDFlag         = "vault-approle-secret-id" // nolint: gosec
 	IgnoreVCSStatusNames             = "ignore-vcs-status-names"
 	LanguageFlag                     = "language"
 	LanguageConfigFileFlag           = "language-config-file"
@@ -205,6 +209,7 @@ const (
 	DefaultTFDownload                   = true
 	DefaultTFEHostname                  = "app.terraform.io"
 	DefaultVCSStatusName                = "atlantis"
+	DefaultVaultAppRoleMountPath        = "approle"
 	DefaultWebBasicAuth                 = false
 	DefaultWebUsername                  = "atlantis"
 	DefaultWebPassword                  = "atlantis"
@@ -528,6 +533,20 @@ var stringFlags = map[string]stringFlag{
 	VCSStatusName: {
 		description:  "Name used to identify Atlantis for pull request statuses.",
 		defaultValue: DefaultVCSStatusName,
+	},
+	VaultAddrFlag: {
+		description: "Address of the Vault server used for AppRole login (ex. https://vault.example.com). Required with --" + VaultAppRoleRoleIDFlag + ".",
+	},
+	VaultAppRoleMountPathFlag: {
+		description:  "Mount path of the Vault AppRole auth method.",
+		defaultValue: DefaultVaultAppRoleMountPath,
+	},
+	VaultAppRoleRoleIDFlag: {
+		description: "Vault AppRole role ID. When set, Atlantis logs in to Vault at startup, keeps the token renewed," +
+			" and exports it as VAULT_TOKEN to Terraform and custom run steps, overriding any static VAULT_TOKEN.",
+	},
+	VaultAppRoleSecretIDFlag: {
+		description: "Vault AppRole secret ID. Required with --" + VaultAppRoleRoleIDFlag + ".",
 	},
 	WebhookHttpHeaders: {
 		description: "Additional headers added to each HTTP POST payload when using HTTP webhooks provided as a JSON string." +
@@ -1070,6 +1089,9 @@ func (s *ServerCmd) setDefaults(c *server.UserConfig, v *viper.Viper) {
 	if c.TFDownloadURL == "" {
 		c.TFDownloadURL = DefaultTFDownloadURL
 	}
+	if c.VaultAppRoleMountPath == "" {
+		c.VaultAppRoleMountPath = DefaultVaultAppRoleMountPath
+	}
 	if c.VCSStatusName == "" {
 		c.VCSStatusName = DefaultVCSStatusName
 	}
@@ -1199,6 +1221,8 @@ func (s *ServerCmd) validate(userConfig server.UserConfig) error {
 		BitbucketWebhookSecretFlag: userConfig.BitbucketWebhookSecret,
 		GiteaTokenFlag:             userConfig.GiteaToken,
 		GiteaWebhookSecretFlag:     userConfig.GiteaWebhookSecret,
+		VaultAppRoleRoleIDFlag:     userConfig.VaultAppRoleRoleID,
+		VaultAppRoleSecretIDFlag:   userConfig.VaultAppRoleSecretID,
 	} {
 		if strings.Contains(token, "\n") {
 			s.Logger.Warn("--%s contains a newline which is usually unintentional", name)
@@ -1207,6 +1231,13 @@ func (s *ServerCmd) validate(userConfig server.UserConfig) error {
 
 	if userConfig.TFEHostname != DefaultTFEHostname && userConfig.TFEToken == "" {
 		return fmt.Errorf("if setting --%s, must set --%s", TFEHostnameFlag, TFETokenFlag)
+	}
+
+	if (userConfig.VaultAppRoleRoleID == "") != (userConfig.VaultAppRoleSecretID == "") {
+		return fmt.Errorf("--%s and --%s must be set together", VaultAppRoleRoleIDFlag, VaultAppRoleSecretIDFlag)
+	}
+	if userConfig.VaultAppRoleRoleID != "" && userConfig.VaultAddr == "" {
+		return fmt.Errorf("--%s must be set when using --%s", VaultAddrFlag, VaultAppRoleRoleIDFlag)
 	}
 
 	if userConfig.RedisClusterAddresses != "" {

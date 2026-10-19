@@ -157,6 +157,10 @@ var testFlags = map[string]any{
 	UseTFPluginCache:                 true,
 	VarFileAllowlistFlag:             "/path",
 	VCSStatusName:                    "my-status",
+	VaultAddrFlag:                    "https://vault.example.com",
+	VaultAppRoleMountPathFlag:        "approle",
+	VaultAppRoleRoleIDFlag:           "role-id",
+	VaultAppRoleSecretIDFlag:         "secret-id",
 	IgnoreVCSStatusNames:             "",
 	WebhookHttpHeaders:               `{"Authorization":"Bearer some-token","X-Custom-Header":["value1","value2"]}`,
 	WebBasicAuthFlag:                 false,
@@ -1113,6 +1117,48 @@ func TestExecute_ValidateGHAppAdditionalInstallations(t *testing.T) {
 			ErrEquals(t, testCase.expErr, err)
 		} else {
 			Ok(t, err)
+		}
+	}
+}
+
+func TestExecute_ValidateVaultAppRole(t *testing.T) {
+	cases := []struct {
+		description string
+		flags       map[string]any
+		expErr      string
+	}{
+		{
+			description: "role ID without secret ID",
+			flags:       map[string]any{VaultAddrFlag: "https://vault", VaultAppRoleRoleIDFlag: "role"},
+			expErr:      "--vault-approle-role-id and --vault-approle-secret-id must be set together",
+		},
+		{
+			description: "secret ID without role ID",
+			flags:       map[string]any{VaultAddrFlag: "https://vault", VaultAppRoleSecretIDFlag: "secret"},
+			expErr:      "--vault-approle-role-id and --vault-approle-secret-id must be set together",
+		},
+		{
+			description: "approle without vault address",
+			flags:       map[string]any{VaultAppRoleRoleIDFlag: "role", VaultAppRoleSecretIDFlag: "secret"},
+			expErr:      "--vault-addr must be set when using --vault-approle-role-id",
+		},
+		{
+			description: "complete approle config",
+			flags:       map[string]any{VaultAddrFlag: "https://vault", VaultAppRoleRoleIDFlag: "role", VaultAppRoleSecretIDFlag: "secret"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Log("Should validate vault approle flags when " + testCase.description)
+		testCase.flags[GHUserFlag] = "user"
+		testCase.flags[GHTokenFlag] = "token"
+		testCase.flags[RepoAllowlistFlag] = "*"
+		c := setup(testCase.flags, t)
+		err := c.Execute()
+		if testCase.expErr != "" {
+			ErrEquals(t, testCase.expErr, err)
+		} else {
+			Ok(t, err)
+			Equals(t, DefaultVaultAppRoleMountPath, passedConfig.VaultAppRoleMountPath)
 		}
 	}
 }

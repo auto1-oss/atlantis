@@ -42,6 +42,7 @@ import (
 	"github.com/runatlantis/atlantis/server/core/drift"
 	"github.com/runatlantis/atlantis/server/core/redis"
 	"github.com/runatlantis/atlantis/server/core/terraform/tfclient"
+	"github.com/runatlantis/atlantis/server/core/vault"
 	"github.com/runatlantis/atlantis/server/jobs"
 	"github.com/runatlantis/atlantis/server/metrics"
 	"github.com/runatlantis/atlantis/server/scheduled"
@@ -627,6 +628,20 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 			return nil, fmt.Errorf("could not write credentials: %w", err)
 		}
 		scheduledExecutorService.AddJob(tokenJd)
+	}
+
+	if userConfig.VaultAppRoleRoleID != "" {
+		vaultTokenRotator := vault.NewAppRoleTokenRotator(logger, vault.AppRoleConfig{
+			Address:   userConfig.VaultAddr,
+			MountPath: userConfig.VaultAppRoleMountPath,
+			RoleID:    userConfig.VaultAppRoleRoleID,
+			SecretID:  userConfig.VaultAppRoleSecretID,
+		})
+		vaultJd, err := vaultTokenRotator.GenerateJob()
+		if err != nil {
+			return nil, fmt.Errorf("initializing vault approle token: %w", err)
+		}
+		scheduledExecutorService.AddJob(vaultJd)
 	}
 
 	projectLocker := &events.DefaultProjectLocker{
