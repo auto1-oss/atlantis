@@ -1119,8 +1119,8 @@ ATLANTIS_INCLUDE_GIT_UNTRACKED_FILES=true
 ```
 
 Include git untracked files in the Atlantis modified file list.
-Used for example with CDKTF pre-workflow hooks that dynamically generate
-Terraform files.
+Used for example with [CDK Terrain](custom-workflows.md#cdk-terrain-cdktn) pre-workflow hooks that
+dynamically generate Terraform files.
 
 ### `--language` <Badge text="v0.45.0+" type="info"/>
 
@@ -1700,6 +1700,59 @@ ATLANTIS_VAR_FILE_ALLOWLIST='/path/to/tfvars/dir'
 Comma-separated list of additional directory paths where [variable definition files](https://developer.hashicorp.com/terraform/language/values/variables#variable-definitions-tfvars-files) can be read from.
 The paths in this argument should be absolute paths. Relative paths and globbing are currently not supported.
 If this argument is not provided, it defaults to Atlantis' data directory, determined by the `--data-dir` argument.
+
+### `--vault-addr`
+
+```bash
+atlantis server --vault-addr="https://vault.example.com"
+# or
+ATLANTIS_VAULT_ADDR="https://vault.example.com"
+```
+
+Address of the Vault server used for [AppRole](https://developer.hashicorp.com/vault/docs/auth/approle) login.
+Required when `--vault-approle-role-id` is set.
+
+### `--vault-approle-mount-path`
+
+```bash
+atlantis server --vault-approle-mount-path="approle"
+# or
+ATLANTIS_VAULT_APPROLE_MOUNT_PATH="approle"
+```
+
+Mount path of the Vault AppRole auth method. Defaults to `approle`.
+
+### `--vault-approle-role-id`
+
+```bash
+atlantis server --vault-approle-role-id="<role-id>"
+# or (recommended)
+ATLANTIS_VAULT_APPROLE_ROLE_ID="<role-id>"
+```
+
+Vault AppRole role ID. When set together with `--vault-approle-secret-id` and `--vault-addr`, Atlantis
+logs in to Vault at startup and exports the resulting token as `VAULT_TOKEN` to Terraform, custom
+run steps and workflow hooks, replacing any static `VAULT_TOKEN` in the server environment.
+Startup fails if the initial login fails.
+
+Atlantis checks the token every minute. Once two thirds of its TTL has elapsed it renews the same
+token, so child tokens created by the Terraform Vault provider stay valid. If renewal fails or the
+role's `token_max_ttl` is reached, it logs in again; the previous token is left to expire so
+in-flight runs are not interrupted.
+
+The role's policy must allow `update` on `auth/token/renew-self`, and on `auth/token/create` unless
+every Vault provider sets `skip_child_token = true`. A periodic token (`token_period`) avoids
+re-logins entirely. The secret ID must remain valid for repeated logins, so use `secret_id_ttl = 0`
+and `secret_id_num_uses = 0` or rotate it out of band.
+
+### `--vault-approle-secret-id`
+
+```bash
+# recommended
+ATLANTIS_VAULT_APPROLE_SECRET_ID="<secret-id>"
+```
+
+Vault AppRole secret ID. Required with `--vault-approle-role-id`.
 
 ### `--vcs-status-name` <Badge text="v0.42.0+" type="info"/>
 

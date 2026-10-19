@@ -140,6 +140,10 @@ type UserConfig struct {
 	TFELocalExecutionMode      bool            `mapstructure:"tfe-local-execution-mode"`
 	TFEToken                   string          `mapstructure:"tfe-token"`
 	VarFileAllowlist           string          `mapstructure:"var-file-allowlist"`
+	VaultAddr                  string          `mapstructure:"vault-addr"`
+	VaultAppRoleMountPath      string          `mapstructure:"vault-approle-mount-path"`
+	VaultAppRoleRoleID         string          `mapstructure:"vault-approle-role-id"`
+	VaultAppRoleSecretID       string          `mapstructure:"vault-approle-secret-id"`
 	VCSStatusName              string          `mapstructure:"vcs-status-name"`
 	DefaultTFDistribution      string          `mapstructure:"default-tf-distribution"`
 	DefaultTFVersion           string          `mapstructure:"default-tf-version"`
