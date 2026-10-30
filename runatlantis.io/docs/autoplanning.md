@@ -12,6 +12,10 @@ The algorithm it uses is as follows:
 1. If it does contain `modules/` look at the directory one level above `modules/`. If it
 contains a supported project indicator file (`*.tf`, `*.tf.json`, `*.tofu`, `*.tofu.json`, or `terragrunt.hcl`) run plan in that directory, otherwise ignore the change (see below for exceptions).
 
+If a plan is still running for an earlier commit of the same pull request when a new commit
+arrives, Atlantis interrupts it, waits for it to exit and then plans the new commit. The
+interrupted projects report that they were cancelled because a newer commit was pushed.
+
 ## Example
 
 Given the directory structure:

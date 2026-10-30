@@ -213,17 +213,23 @@ atlantis cancel
 
 ### Explanation
 
-Cancels all **queued commands** for the current pull request.
+Cancels all **queued commands** for the current pull request and interrupts **running plans**.
+
+Running plans, including their custom `run` steps, receive `SIGINT`, the signal Terraform handles as Ctrl+C: it stops gracefully and releases the state lock. A process that is still running a minute later is killed. Atlantis waits for the interrupted plans to exit before it replies.
 
 ::: warning NOTE
-This command **does not** attempt to stop or interrupt commands that are already running. It only removes subsequent commands that are waiting in the queue. There is currently no mechanism in Atlantis to interrupt the currently running process.
+Running applies are **not** interrupted, because stopping an apply part way through leaves infrastructure partially changed. Only applies that are still queued are cancelled.
 :::
 
-This is useful if you have multiple commands queued (e.g., atlantis apply for several projects) and you realize you made a mistake in your PR. Using cancel prevents the queued plans from executing. Especially with long-running operations, this can save time and resources.
+This is useful if you have multiple commands queued (e.g., atlantis apply for several projects) and you realize you made a mistake in your PR. Especially with long-running operations, this can save time and resources.
 
 ### Examples
 
 ```bash
+# A plan for many projects is running.
+# This command interrupts the running projects and cancels the queued ones.
+atlantis cancel
+
 # An apply is currently running, and another is queued.
 # This command will cancel the queued apply but not the running one.
 atlantis cancel
@@ -350,6 +356,8 @@ atlantis unlock
 
 Removes all atlantis locks and discards all plans for this PR.
 To unlock a specific plan you can use the Atlantis UI.
+
+Plans that are still running for this PR are interrupted first, the same way as with [`atlantis cancel`](#atlantis-cancel), so that they cannot write a plan or take a lock again after the unlock.
 
 ---
 

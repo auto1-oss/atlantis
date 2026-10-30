@@ -4,14 +4,15 @@
 package events
 
 import (
+	"context"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"sync"
 
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/runatlantis/atlantis/server/events/command"
-	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/logging"
 )
 
@@ -38,8 +39,7 @@ func runProjectCmdsParallel(
 	cmds []command.ProjectContext,
 	runnerFunc prjCmdRunnerFunc,
 	poolSize int,
-	cancellationTracker CancellationTracker,
-	pull models.PullRequest,
+	runCtx context.Context,
 ) command.Result {
 	var results []command.ProjectResult
 	mux := &sync.Mutex{}
@@ -48,14 +48,14 @@ func runProjectCmdsParallel(
 	cancelledAt := -1
 
 	for i, pCmd := range cmds {
-		if cancellationTracker != nil && cancellationTracker.IsCancelled(pull) {
+		if runCtx.Err() != nil {
 			cancelledAt = i
 			break
 		}
 
 		wg.Add()
 
-		if cancellationTracker != nil && cancellationTracker.IsCancelled(pull) {
+		if runCtx.Err() != nil {
 			// because wg.Add() is a blocking call, we check for cancellation again after it returns
 			// to avoid waiting for another goroutine to finish before we can exit early.
 			// see used sizedwaitgroup package:
@@ -79,17 +79,7 @@ func runProjectCmdsParallel(
 	wg.Wait()
 
 	if cancelledAt != -1 {
-		for _, pCmd := range cmds[cancelledAt:] {
-			results = append(results, command.ProjectResult{
-				Command: pCmd.CommandName,
-				ProjectCommandOutput: command.ProjectCommandOutput{
-					Error: fmt.Errorf("operation cancelled via `atlantis cancel` command"),
-				},
-				RepoRelDir:  pCmd.RepoRelDir,
-				Workspace:   pCmd.Workspace,
-				ProjectName: pCmd.ProjectName,
-			})
-		}
+		results = append(results, createCancelledResults([][]command.ProjectContext{cmds[cancelledAt:]}, runCause(runCtx))...)
 	}
 
 	return command.Result{ProjectResults: results}
@@ -191,12 +181,11 @@ func runProjectCmdsParallelGroups(
 	cmds []command.ProjectContext,
 	runnerFunc prjCmdRunnerFunc,
 	poolSize int,
-	cancellationTracker CancellationTracker,
 ) command.Result {
 	var results []command.ProjectResult
 	groups := splitByExecutionOrderGroup(cmds)
 	for _, group := range groups {
-		res := runProjectCmdsParallel(group, runnerFunc, poolSize, cancellationTracker, ctx.Pull)
+		res := runProjectCmdsParallel(group, runnerFunc, poolSize, context.Background())
 		results = append(results, res.ProjectResults...)
 		if res.HasErrors() && group[0].AbortOnExecutionOrderFail {
 			ctx.Log.Info("abort on execution order when failed")
@@ -207,10 +196,13 @@ func runProjectCmdsParallelGroups(
 	return command.Result{ProjectResults: results}
 }
 
-func runProjectCmdsWithCancellationTracker(
+// runProjectCmdsWithCancellation runs projectCmds until runCtx is cancelled.
+// Projects that have not started by then are reported as cancelled, and
+// running plan projects have their processes interrupted.
+func runProjectCmdsWithCancellation(
 	ctx *command.Context,
+	runCtx context.Context,
 	projectCmds []command.ProjectContext,
-	cancellationTracker CancellationTracker,
 	parallelPoolSize int,
 	isParallel bool,
 	runnerFunc prjCmdRunnerFunc,
@@ -219,22 +211,25 @@ func runProjectCmdsWithCancellationTracker(
 		ctx.Log.Info("Running commands in parallel")
 	}
 
-	groups := prepareExecutionGroups(projectCmds, isParallel)
-	if cancellationTracker != nil {
-		defer cancellationTracker.Clear(ctx.Pull)
+	projectCmds = slices.Clone(projectCmds)
+	for i := range projectCmds {
+		if projectCmds[i].CommandName == command.Plan {
+			projectCmds[i].Interrupt = runCtx
+		}
 	}
+	groups := prepareExecutionGroups(projectCmds, isParallel)
 
 	var results []command.ProjectResult
 	for i, group := range groups {
-		if i > 0 && cancellationTracker != nil && cancellationTracker.IsCancelled(ctx.Pull) {
-			ctx.Log.Info("Skipping execution order group %d and all subsequent groups due to cancellation", group[0].ExecutionOrderGroup)
-			results = append(results, createCancelledResults(groups[i:])...)
+		if cause := runCause(runCtx); cause != nil {
+			ctx.Log.Info("skipping execution order group %d and all subsequent groups due to cancellation, %s", group[0].ExecutionOrderGroup, cause)
+			results = append(results, createCancelledResults(groups[i:], cause)...)
 			break
 		}
 
 		var groupResult command.Result
 		if isParallel && len(group) > 1 {
-			groupResult = runProjectCmdsParallel(group, runnerFunc, parallelPoolSize, cancellationTracker, ctx.Pull)
+			groupResult = runProjectCmdsParallel(group, runnerFunc, parallelPoolSize, runCtx)
 		} else {
 			groupResult = runProjectCmds(group, runnerFunc)
 		}
@@ -281,14 +276,14 @@ func createIndividualCommandGroups(projectCmds []command.ProjectContext) [][]com
 	return groups
 }
 
-func createCancelledResults(remainingGroups [][]command.ProjectContext) []command.ProjectResult {
+func createCancelledResults(remainingGroups [][]command.ProjectContext, cause error) []command.ProjectResult {
 	var cancelledResults []command.ProjectResult
 	for _, group := range remainingGroups {
 		for _, cmd := range group {
 			cancelledResults = append(cancelledResults, command.ProjectResult{
 				Command: cmd.CommandName,
 				ProjectCommandOutput: command.ProjectCommandOutput{
-					Error: fmt.Errorf("operation cancelled via `atlantis cancel` command"),
+					Error: cause,
 				},
 				RepoRelDir:  cmd.RepoRelDir,
 				Workspace:   cmd.Workspace,

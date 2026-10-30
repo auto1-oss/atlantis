@@ -1016,6 +1016,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		vcsClient,
 		userConfig.SilenceNoProjects,
 		userConfig.DisableUnlockLabel,
+		cancellationTracker,
 	)
 
 	versionCommandRunner := events.NewVersionCommandRunner(

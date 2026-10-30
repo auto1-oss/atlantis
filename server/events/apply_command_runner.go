@@ -134,6 +134,8 @@ func (a *ApplyCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
 		return
 	}
 
+	runCtx, endRun := startCancellableRun(ctx.Log, a.cancellationTracker, pull, command.Apply)
+	defer endRun()
 	var unlockPullApply func()
 	if a.workingDirLocker != nil {
 		unlockPullApply, err = a.workingDirLocker.TryLockPull(ctx.Pull.BaseRepo.FullName, ctx.Pull.Num, command.Apply, WorkingDirLockMetadataForPull(ctx.Pull))
@@ -233,7 +235,7 @@ func (a *ApplyCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
 	}
 
 	preApplyPullStatus := ctx.PullStatus
-	result := runProjectCmdsWithCancellationTracker(ctx, projectCmds, a.cancellationTracker, a.parallelPoolSize, a.isParallelEnabled(projectCmds), a.prjCmdRunner.Apply)
+	result := runProjectCmdsWithCancellation(ctx, runCtx, projectCmds, a.parallelPoolSize, a.isParallelEnabled(projectCmds), a.prjCmdRunner.Apply)
 	if a.AllowPartialApply {
 		if warning := partialApplySkippedWarning(preApplyPullStatus, projectCmds); warning != "" {
 			ctx.Log.Warn("%s", warning)

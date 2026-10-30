@@ -5,6 +5,8 @@ package events_test
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -23,6 +25,30 @@ import (
 	. "github.com/runatlantis/atlantis/testing"
 	"github.com/stretchr/testify/require"
 )
+
+// projectContextMatcher matches a ProjectContext regardless of its Interrupt,
+// which is set on every plan before it runs.
+type projectContextMatcher struct {
+	expected command.ProjectContext
+}
+
+func (m projectContextMatcher) Matches(param Param) bool {
+	actual, ok := param.(command.ProjectContext)
+	if !ok {
+		return false
+	}
+	actual.Interrupt = nil
+	m.expected.Interrupt = nil
+	return reflect.DeepEqual(m.expected, actual)
+}
+
+func (m projectContextMatcher) String() string {
+	return fmt.Sprintf("ProjectContext(%#v)", m.expected)
+}
+
+func planCtx(expected command.ProjectContext) command.ProjectContext {
+	return ArgThat[command.ProjectContext](projectContextMatcher{expected: expected})
+}
 
 func TestPlanCommandRunner_IsSilenced(t *testing.T) {
 	logger := logging.NewNoopLogger(t)
@@ -568,13 +594,13 @@ func TestPlanCommandRunner_ExecutionOrder(t *testing.T) {
 			// 	return ReturnValues{[]command.ProjectContext{{CommandName: command.Plan}}, nil}
 			// })
 			for i := range c.ProjectContexts {
-				When(projectCommandRunner.Plan(c.ProjectContexts[i])).ThenReturn(c.ProjectCommandOutputs[i])
+				When(projectCommandRunner.Plan(planCtx(c.ProjectContexts[i]))).ThenReturn(c.ProjectCommandOutputs[i])
 			}
 
 			planCommandRunner.Run(ctx, cmd)
 
 			for i := range c.ProjectContexts {
-				projectCommandRunner.VerifyWasCalled(c.RunnerInvokeMatch[i]).Plan(c.ProjectContexts[i])
+				projectCommandRunner.VerifyWasCalled(c.RunnerInvokeMatch[i]).Plan(planCtx(c.ProjectContexts[i]))
 			}
 
 			require.Equal(t, c.PlanFailed, ctx.CommandHasErrors)
@@ -800,7 +826,7 @@ func TestPlanCommandRunner_AtlantisApplyStatus(t *testing.T) {
 			When(projectCommandBuilder.BuildPlanCommands(ctx, cmd)).ThenReturn(c.ProjectContexts, nil)
 
 			for i := range c.ProjectContexts {
-				When(projectCommandRunner.Plan(c.ProjectContexts[i])).ThenReturn(c.ProjectCommandOutput[i])
+				When(projectCommandRunner.Plan(planCtx(c.ProjectContexts[i]))).ThenReturn(c.ProjectCommandOutput[i])
 			}
 
 			planCommandRunner.Run(ctx, cmd)
@@ -1123,7 +1149,7 @@ func TestPlanCommandRunner_PendingApplyStatus(t *testing.T) {
 			}
 
 			When(projectCommandBuilder.BuildPlanCommands(ctx, cmd)).ThenReturn(projectContexts, nil)
-			When(projectCommandRunner.Plan(projectContexts[0])).ThenReturn(c.ProjectResults[0])
+			When(projectCommandRunner.Plan(planCtx(projectContexts[0]))).ThenReturn(c.ProjectResults[0])
 
 			planCommandRunner.Run(ctx, cmd)
 

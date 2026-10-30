@@ -1661,6 +1661,7 @@ func setupE2E(t *testing.T, repoDir string, opt setupOption) (events_controllers
 		e2eVCSClient,
 		silenceNoProjects,
 		disableUnlockLabel,
+		cancellationTracker,
 	)
 
 	versionCommandRunner := events.NewVersionCommandRunner(

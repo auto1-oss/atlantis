@@ -162,7 +162,7 @@ func (s *ShellCommandRunner) RunCommandAsync(ctx command.ProjectContext) (chan<-
 		stdin, _ := s.cmd.StdinPipe()
 
 		ctx.Log.Debug("starting '%s' in '%s'", s.describe(), s.workingDir)
-		err := s.cmd.Start()
+		processExited, err := StartInterruptible(ctx.Log, ctx.Interrupt, s.cmd)
 		if err != nil {
 			err = fmt.Errorf("running '%s' in '%s': %w", s.describe(), s.workingDir, err)
 			ctx.Log.Err("%s", err.Error())
@@ -233,13 +233,14 @@ func (s *ShellCommandRunner) RunCommandAsync(ctx command.ProjectContext) (chan<-
 
 		// Wait for the command to complete.
 		err = s.cmd.Wait()
+		processExited()
 
 		dur := time.Since(start)
 		log := ctx.Log.With("duration", dur)
 
 		// We're done now. Send an error if there was one.
 		if err != nil {
-			err = fmt.Errorf("running %s in '%s': %w", s.describeSplit(), s.workingDir, err)
+			err = WrapInterrupted(ctx.Interrupt, fmt.Errorf("running %s in '%s': %w", s.describeSplit(), s.workingDir, err))
 			log.Err("%s", err.Error())
 			outCh <- Line{Err: err}
 		} else {

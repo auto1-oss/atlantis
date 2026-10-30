@@ -112,6 +112,14 @@ type PlanCommandRunner struct {
 func (p *PlanCommandRunner) runAutoplan(ctx *command.Context) {
 	baseRepo := ctx.Pull.BaseRepo
 	pull := ctx.Pull
+	// Registered before the pull lock is taken so that the run only counts
+	// as ended once the lock has been released.
+	runCtx, endRun := startCancellableRun(ctx.Log, p.cancellationTracker, pull, command.Plan)
+	defer endRun()
+	if cause := runCause(runCtx); cause != nil {
+		ctx.Log.Info("not running autoplan, %s", cause)
+		return
+	}
 	unlockPullPlan, ok := p.lockPullForPlan(ctx, AutoplanCommand{})
 	if !ok {
 		return
@@ -177,7 +185,7 @@ func (p *PlanCommandRunner) runAutoplan(ctx *command.Context) {
 		return
 	}
 
-	result := runProjectCmdsWithCancellationTracker(ctx, projectCmds, p.cancellationTracker, p.parallelPoolSize, p.isParallelEnabled(projectCmds), p.prjCmdRunner.Plan)
+	result := runProjectCmdsWithCancellation(ctx, runCtx, projectCmds, p.parallelPoolSize, p.isParallelEnabled(projectCmds), p.prjCmdRunner.Plan)
 
 	if p.autoMerger.automergeEnabled(projectCmds) && result.HasErrors() {
 		ctx.Log.Info("deleting plans because there were errors and automerge requires all plans succeed")
@@ -218,6 +226,12 @@ func (p *PlanCommandRunner) run(ctx *command.Context, cmd *CommentCommand) {
 	var err error
 	baseRepo := ctx.Pull.BaseRepo
 	pull := ctx.Pull
+	runCtx, endRun := startCancellableRun(ctx.Log, p.cancellationTracker, pull, command.Plan)
+	defer endRun()
+	if cause := runCause(runCtx); cause != nil {
+		ctx.Log.Info("not running plan, %s", cause)
+		return
+	}
 	unlockPullPlan, ok := p.lockPullForPlan(ctx, cmd)
 	if !ok {
 		return
@@ -324,7 +338,7 @@ func (p *PlanCommandRunner) run(ctx *command.Context, cmd *CommentCommand) {
 		}
 	}
 
-	result := runProjectCmdsWithCancellationTracker(ctx, projectCmds, p.cancellationTracker, p.parallelPoolSize, p.isParallelEnabled(projectCmds), p.prjCmdRunner.Plan)
+	result := runProjectCmdsWithCancellation(ctx, runCtx, projectCmds, p.parallelPoolSize, p.isParallelEnabled(projectCmds), p.prjCmdRunner.Plan)
 	ctx.CommandHasErrors = result.HasErrors()
 
 	if p.autoMerger.automergeEnabled(projectCmds) && result.HasErrors() {

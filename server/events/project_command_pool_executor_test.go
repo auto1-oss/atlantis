@@ -4,6 +4,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -39,7 +40,7 @@ func TestRunProjectCmdsParallel_AllComplete(t *testing.T) {
 		makeProjectContext("p3"),
 	}
 
-	result := runProjectCmdsParallel(cmds, successRunner, 3, nil, models.PullRequest{})
+	result := runProjectCmdsParallel(cmds, successRunner, 3, context.Background())
 
 	require.Len(t, result.ProjectResults, 3)
 	assert.False(t, result.HasErrors())
@@ -48,7 +49,9 @@ func TestRunProjectCmdsParallel_AllComplete(t *testing.T) {
 func TestRunProjectCmdsParallel_CancelledBeforeExecution(t *testing.T) {
 	tracker := NewCancellationTracker()
 	pull := models.PullRequest{Num: 1}
-	tracker.Cancel(pull)
+	runCtx, endRun, _ := tracker.Start(pull, command.Plan)
+	defer endRun()
+	tracker.Cancel(pull, ErrCancelledByCommand)
 
 	cmds := []command.ProjectContext{
 		makeProjectContext("p1"),
@@ -56,7 +59,7 @@ func TestRunProjectCmdsParallel_CancelledBeforeExecution(t *testing.T) {
 		makeProjectContext("p3"),
 	}
 
-	result := runProjectCmdsParallel(cmds, successRunner, 3, tracker, pull)
+	result := runProjectCmdsParallel(cmds, successRunner, 3, runCtx)
 
 	require.Len(t, result.ProjectResults, 3)
 	for _, r := range result.ProjectResults {
@@ -78,10 +81,12 @@ func TestRunProjectCmdsParallel_CancelledWhileExceedingPoolSize(t *testing.T) {
 		const poolSize = 2
 		tracker := NewCancellationTracker()
 		pull := models.PullRequest{Num: 1}
+		runCtx, endRun, _ := tracker.Start(pull, command.Plan)
+		defer endRun()
 		started := make(chan string, poolSize)
 		release := make(chan struct{})
 		cancelAndRelease := sync.OnceFunc(func() {
-			tracker.Cancel(pull)
+			tracker.Cancel(pull, ErrCancelledByCommand)
 			close(release)
 		})
 		defer cancelAndRelease()
@@ -99,7 +104,7 @@ func TestRunProjectCmdsParallel_CancelledWhileExceedingPoolSize(t *testing.T) {
 		}
 		finished := make(chan command.Result, 1)
 		go func() {
-			finished <- runProjectCmdsParallel(cmds, runner, poolSize, tracker, pull)
+			finished <- runProjectCmdsParallel(cmds, runner, poolSize, runCtx)
 		}()
 
 		require.ElementsMatch(t, []string{"p1", "p2"}, []string{<-started, <-started})
@@ -375,8 +380,7 @@ func makeCtx(t *testing.T, pull models.PullRequest) *command.Context {
 	}
 }
 
-func TestRunProjectCmdsWithCancellationTracker_NoCancellation(t *testing.T) {
-	tracker := NewCancellationTracker()
+func TestRunProjectCmdsWithCancellation_NoCancellation(t *testing.T) {
 	pull := models.PullRequest{Num: 1}
 	ctx := makeCtx(t, pull)
 
@@ -385,16 +389,15 @@ func TestRunProjectCmdsWithCancellationTracker_NoCancellation(t *testing.T) {
 		makeProjectContext("p2"),
 	}
 
-	result := runProjectCmdsWithCancellationTracker(ctx, cmds, tracker, 2, false, successRunner)
+	result := runProjectCmdsWithCancellation(ctx, context.Background(), cmds, 2, false, successRunner)
 
 	require.Len(t, result.ProjectResults, 2)
 	assert.False(t, result.HasErrors())
 }
 
-func TestRunProjectCmdsWithCancellationTracker_ParallelPlanAndApplyRunConcurrently(t *testing.T) {
+func TestRunProjectCmdsWithCancellation_ParallelPlanAndApplyRunConcurrently(t *testing.T) {
 	for _, cmdName := range []command.Name{command.Plan, command.Apply} {
 		t.Run(cmdName.String(), func(t *testing.T) {
-			tracker := NewCancellationTracker()
 			pull := models.PullRequest{Num: 4}
 			ctx := makeCtx(t, pull)
 			release := make(chan struct{})
@@ -429,7 +432,7 @@ func TestRunProjectCmdsWithCancellationTracker_ParallelPlanAndApplyRunConcurrent
 			}
 
 			go func() {
-				resultCh <- runProjectCmdsWithCancellationTracker(ctx, cmds, tracker, 2, true, blockingRunner)
+				resultCh <- runProjectCmdsWithCancellation(ctx, context.Background(), cmds, 2, true, blockingRunner)
 			}()
 
 			enteredProjects := map[string]bool{}
@@ -470,10 +473,12 @@ func TestRunProjectCmdsWithCancellationTracker_ParallelPlanAndApplyRunConcurrent
 	}
 }
 
-func TestRunProjectCmdsWithCancellationTracker_CancelBetweenGroups(t *testing.T) {
+func TestRunProjectCmdsWithCancellation_CancelBetweenGroups(t *testing.T) {
 	tracker := NewCancellationTracker()
 	pull := models.PullRequest{Num: 2}
 	ctx := makeCtx(t, pull)
+	runCtx, endRun, _ := tracker.Start(pull, command.Plan)
+	defer endRun()
 
 	cmds := []command.ProjectContext{
 		{CommandName: command.Plan, ProjectName: "p1", RepoRelDir: "p1", Workspace: "default", ExecutionOrderGroup: 0},
@@ -483,12 +488,12 @@ func TestRunProjectCmdsWithCancellationTracker_CancelBetweenGroups(t *testing.T)
 
 	cancellingRunner := func(cmd command.ProjectContext) command.ProjectCommandOutput {
 		if cmd.ProjectName == "p1" {
-			tracker.Cancel(pull)
+			tracker.Cancel(pull, ErrCancelledByUnlock)
 		}
 		return command.ProjectCommandOutput{}
 	}
 
-	result := runProjectCmdsWithCancellationTracker(ctx, cmds, tracker, 2, true, cancellingRunner)
+	result := runProjectCmdsWithCancellation(ctx, runCtx, cmds, 2, true, cancellingRunner)
 
 	require.Len(t, result.ProjectResults, 3)
 
@@ -503,22 +508,56 @@ func TestRunProjectCmdsWithCancellationTracker_CancelBetweenGroups(t *testing.T)
 
 	p3Result := findResult(result, "p3")
 	require.NotNil(t, p3Result)
-	require.Error(t, p3Result.Error)
-	assert.Contains(t, p3Result.Error.Error(), "cancelled")
+	require.ErrorIs(t, p3Result.Error, ErrCancelledByUnlock)
 }
 
-func TestRunProjectCmdsWithCancellationTracker_ClearsTrackerOnDone(t *testing.T) {
+func TestRunProjectCmdsWithCancellation_CancelledBeforeFirstGroup(t *testing.T) {
 	tracker := NewCancellationTracker()
 	pull := models.PullRequest{Num: 3}
 	ctx := makeCtx(t, pull)
+	runCtx, endRun, _ := tracker.Start(pull, command.Plan)
+	defer endRun()
+	tracker.Cancel(pull, ErrCancelledByUnlock)
 
-	tracker.Cancel(pull)
-	assert.True(t, tracker.IsCancelled(pull))
+	ran := false
+	runner := func(command.ProjectContext) command.ProjectCommandOutput {
+		ran = true
+		return command.ProjectCommandOutput{}
+	}
+	result := runProjectCmdsWithCancellation(ctx, runCtx, []command.ProjectContext{makeProjectContext("p1")}, 2, false, runner)
 
-	cmds := []command.ProjectContext{makeProjectContext("p1")}
-	runProjectCmdsWithCancellationTracker(ctx, cmds, tracker, 2, false, successRunner)
+	assert.False(t, ran)
+	require.Len(t, result.ProjectResults, 1)
+	require.ErrorIs(t, result.ProjectResults[0].Error, ErrCancelledByUnlock)
+}
 
-	assert.False(t, tracker.IsCancelled(pull), "tracker should be cleared after execution")
+func TestRunProjectCmdsWithCancellation_InterruptSetOnlyForPlans(t *testing.T) {
+	pull := models.PullRequest{Num: 5}
+	ctx := makeCtx(t, pull)
+	runCtx := context.Background()
+
+	for _, tc := range []struct {
+		cmdName       command.Name
+		wantInterrupt bool
+	}{
+		{command.Plan, true},
+		{command.Apply, false},
+	} {
+		t.Run(tc.cmdName.String(), func(t *testing.T) {
+			cmds := []command.ProjectContext{makeProjectContext("p1")}
+			cmds[0].CommandName = tc.cmdName
+			var got context.Context
+			runner := func(cmd command.ProjectContext) command.ProjectCommandOutput {
+				got = cmd.Interrupt
+				return command.ProjectCommandOutput{}
+			}
+
+			runProjectCmdsWithCancellation(ctx, runCtx, cmds, 1, false, runner)
+
+			assert.Equal(t, tc.wantInterrupt, got != nil)
+			assert.Nil(t, cmds[0].Interrupt, "caller's project commands must not be modified")
+		})
+	}
 }
 
 func TestCreateCancelledResults(t *testing.T) {
@@ -532,12 +571,11 @@ func TestCreateCancelledResults(t *testing.T) {
 		},
 	}
 
-	results := createCancelledResults(groups)
+	results := createCancelledResults(groups, ErrCancelledByCommand)
 
 	require.Len(t, results, 3)
 	for _, r := range results {
-		require.Error(t, r.Error)
-		assert.Contains(t, r.Error.Error(), "cancelled")
+		require.ErrorIs(t, r.Error, ErrCancelledByCommand)
 	}
 
 	assert.Equal(t, "p1", results[0].ProjectName)
@@ -557,7 +595,7 @@ func findResult(result command.Result, projectName string) *command.ProjectResul
 	return nil
 }
 
-func TestRunProjectCmdsWithCancellationTracker_UpdatesPullStatusBetweenGroups(t *testing.T) {
+func TestRunProjectCmdsWithCancellation_UpdatesPullStatusBetweenGroups(t *testing.T) {
 	logger := logging.NewNoopLogger(t)
 	ctx := &command.Context{
 		Log: logger,
@@ -609,10 +647,10 @@ func TestRunProjectCmdsWithCancellationTracker_UpdatesPullStatusBetweenGroups(t 
 		}
 	}
 
-	result := runProjectCmdsWithCancellationTracker(
+	result := runProjectCmdsWithCancellation(
 		ctx,
+		context.Background(),
 		projectCmds,
-		nil,
 		1,
 		false,
 		runnerFunc,
