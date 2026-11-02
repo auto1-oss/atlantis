@@ -53,6 +53,10 @@ atlantis plan [options] -- [terraform plan flags]
 Runs `terraform plan` on the pull request's branch. You may wish to re-run plan after Atlantis has already done
 so if you've changed some resources manually.
 
+Each project in the plan comment links to its job page in the Atlantis UI, which shows the full, unformatted
+output and is easy to share. Job output is kept in memory until the pull request is closed, so the link stops
+working once the pull request is closed or the Atlantis server restarts.
+
 ### Examples
 
 ```bash

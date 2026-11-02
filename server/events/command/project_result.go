@@ -24,9 +24,11 @@ type ProjectCommandOutput struct {
 	PolicyCheckResults *models.PolicyCheckResults
 	ApplySuccess       string
 	ApplySuccessURL    string `json:"-"`
-	VersionSuccess     string
-	ImportSuccess      *models.ImportSuccess
-	StateRmSuccess     *models.StateRmSuccess
+	// JobURL links to the Atlantis page that shows this project's full output.
+	JobURL         string `json:"-"`
+	VersionSuccess string
+	ImportSuccess  *models.ImportSuccess
+	StateRmSuccess *models.StateRmSuccess
 }
 
 // CommitStatus returns the vcs commit status of this project result.

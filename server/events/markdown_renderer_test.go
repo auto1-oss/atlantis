@@ -5146,3 +5146,50 @@ Ran Plan for 3 projects:
 		})
 	}
 }
+
+func TestRenderProjectResults_PlanJobURL(t *testing.T) {
+	const link = ":mag: [View full output in Atlantis](https://atlantis.example.com/jobs/"
+	planned := func(name, jobURL string) command.ProjectResult {
+		return command.ProjectResult{
+			RepoRelDir: name,
+			Workspace:  "default",
+			ProjectCommandOutput: command.ProjectCommandOutput{
+				PlanSuccess: &models.PlanSuccess{TerraformOutput: "terraform-output", LockURL: "lock-url", RePlanCmd: "atlantis plan -d " + name, ApplyCmd: "atlantis apply -d " + name},
+				JobURL:      jobURL,
+			},
+		}
+	}
+	errored := func(name, jobURL string) command.ProjectResult {
+		return command.ProjectResult{
+			RepoRelDir:           name,
+			Workspace:            "default",
+			ProjectCommandOutput: command.ProjectCommandOutput{Error: errors.New("plan failed"), JobURL: jobURL},
+		}
+	}
+	cases := []struct {
+		description string
+		results     []command.ProjectResult
+		wantLinks   []string
+	}{
+		{"single successful plan", []command.ProjectResult{planned("a", "https://atlantis.example.com/jobs/1")}, []string{link + "1)"}},
+		{"single failed plan", []command.ProjectResult{errored("a", "https://atlantis.example.com/jobs/1")}, []string{link + "1)"}},
+		{"multiple projects", []command.ProjectResult{planned("a", "https://atlantis.example.com/jobs/1"), errored("b", "https://atlantis.example.com/jobs/2")}, []string{link + "1)", link + "2)"}},
+		{"no job url", []command.ProjectResult{planned("a", "")}, nil},
+	}
+
+	r := events.NewMarkdownRenderer(false, false, false, false, false, false, "", "atlantis", false, false)
+	ctx := &command.Context{
+		Log:  logging.NewNoopLogger(t),
+		Pull: models.PullRequest{BaseRepo: models.Repo{VCSHost: models.VCSHost{Type: models.Github}}},
+	}
+	for _, c := range cases {
+		t.Run(c.description, func(t *testing.T) {
+			s := r.Render(ctx, command.Result{ProjectResults: c.results}, &events.CommentCommand{Name: command.Plan})
+
+			Equals(t, len(c.wantLinks), strings.Count(s, ":mag:"))
+			for _, want := range c.wantLinks {
+				Assert(t, strings.Contains(s, want), "expected %q in:\n%s", want, s)
+			}
+		})
+	}
+}

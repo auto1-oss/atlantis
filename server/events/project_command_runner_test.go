@@ -48,10 +48,12 @@ func TestDefaultProjectCommandRunner_Plan(t *testing.T) {
 	mockWorkingDir := mocks.NewMockWorkingDir()
 	mockLocker := mocks.NewMockProjectLocker()
 	mockCommandRequirementHandler := mocks.NewMockCommandRequirementHandler()
+	mockJobURLGenerator := jobmocks.NewMockProjectJobURLGenerator()
 
 	runner := events.DefaultProjectCommandRunner{
 		Locker:                    mockLocker,
 		LockURLGenerator:          mockURLGenerator{},
+		ProjectJobURLGenerator:    mockJobURLGenerator,
 		InitStepRunner:            mockInit,
 		PlanStepRunner:            mockPlan,
 		ApplyStepRunner:           mockApply,
@@ -109,11 +111,13 @@ func TestDefaultProjectCommandRunner_Plan(t *testing.T) {
 	When(mockPlan.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("plan", nil)
 	When(mockApply.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("apply", nil)
 	When(mockRun.Run(ctx, nil, "", repoDir, expEnvs, true, nil, nil)).ThenReturn("run", nil)
+	When(mockJobURLGenerator.GenerateProjectJobURL(ctx)).ThenReturn("https://atlantis.example.com/jobs/job-id", nil)
 	res := runner.Plan(ctx)
 
 	Ok(t, res.Error)
 	Assert(t, res.PlanSuccess != nil, "exp plan success")
 	Equals(t, "https://lock-key", res.PlanSuccess.LockURL)
+	Equals(t, "https://atlantis.example.com/jobs/job-id", res.JobURL)
 	Equals(t, planHashForContent(planContents), res.PlanSuccess.PlanHash)
 	t.Logf("output is %s", res.PlanSuccess.TerraformOutput)
 	Equals(t, "run\napply\nplan\ninit", res.PlanSuccess.TerraformOutput)

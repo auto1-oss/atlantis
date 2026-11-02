@@ -387,15 +387,21 @@ func (p *DefaultProjectCommandRunner) checkVarFilesResolved(ctx command.ProjectC
 }
 
 func (p *DefaultProjectCommandRunner) workingDirLockMetadata(ctx command.ProjectContext) WorkingDirLockMetadata {
+	return WorkingDirLockMetadataForProject(ctx, p.projectJobURL(ctx))
+}
+
+// projectJobURL returns the URL of the Atlantis page showing this project's
+// output, or "" if there is none.
+func (p *DefaultProjectCommandRunner) projectJobURL(ctx command.ProjectContext) string {
 	if p.ProjectJobURLGenerator == nil {
-		return WorkingDirLockMetadataForProject(ctx, "")
+		return ""
 	}
 	jobURL, err := p.ProjectJobURLGenerator.GenerateProjectJobURL(ctx)
 	if err != nil {
 		ctx.Log.Warn("generating project job URL: %v", err)
-		jobURL = ""
+		return ""
 	}
-	return WorkingDirLockMetadataForProject(ctx, jobURL)
+	return jobURL
 }
 
 // Plan runs terraform plan for the project described by ctx.
@@ -405,6 +411,7 @@ func (p *DefaultProjectCommandRunner) Plan(ctx command.ProjectContext) command.P
 		PlanSuccess: planSuccess,
 		Error:       err,
 		Failure:     failure,
+		JobURL:      p.projectJobURL(ctx),
 	}
 }
 
