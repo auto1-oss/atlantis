@@ -192,6 +192,12 @@ ENV GCOMPAT_VERSION="1.1.0-r4"
 ENV COREUTILS_ENV_VERSION="9.11-r0"
 # renovate: datasource=apk depName=python3
 ENV PYTHON3_VERSION="3.14.10-r1"
+# renovate: datasource=apk depName=py3-yaml
+ENV PY3_YAML_VERSION="6.0.3-r2"
+# renovate: datasource=apk depName=py3-jinja2
+ENV PY3_JINJA2_VERSION="3.1.6-r1"
+# renovate: datasource=apk depName=py3-requests
+ENV PY3_REQUESTS_VERSION="2.33.1-r0"
 
 # Install packages needed to run Atlantis.
 # We place this last as it will bust less docker layer caches when packages update
@@ -205,9 +211,12 @@ RUN apk add --no-cache \
     dumb-init=${DUMB_INIT_VERSION} \
     gcompat=${GCOMPAT_VERSION} \
     coreutils-env=${COREUTILS_ENV_VERSION} \
-    python3=${PYTHON3_VERSION} && \
+    python3=${PYTHON3_VERSION} \
+    py3-yaml=${PY3_YAML_VERSION} \
+    py3-jinja2=${PY3_JINJA2_VERSION} \
+    py3-requests=${PY3_REQUESTS_VERSION} && \
     { [ -e /usr/bin/python ] || ln -s python3 /usr/bin/python; } && \
-    python --version && python3 --version
+    python --version && python3 --version && python -c "import jinja2, requests, yaml"
 
 # Strip file capabilities only under fcap_scan_dirs (common rootfs locations for
 # binaries and libs: /bin, /sbin, /usr, /opt, /lib, /lib64). This is a scoped
