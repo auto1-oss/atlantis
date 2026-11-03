@@ -15,12 +15,14 @@ func NewUnlockCommandRunner(
 	vcsClient vcs.Client,
 	SilenceNoProjects bool,
 	DisableUnlockLabel string,
+	cancellationTracker CancellationTracker,
 ) *UnlockCommandRunner {
 	return &UnlockCommandRunner{
-		deleteLockCommand:  deleteLockCommand,
-		vcsClient:          vcsClient,
-		SilenceNoProjects:  SilenceNoProjects,
-		DisableUnlockLabel: DisableUnlockLabel,
+		deleteLockCommand:   deleteLockCommand,
+		vcsClient:           vcsClient,
+		SilenceNoProjects:   SilenceNoProjects,
+		DisableUnlockLabel:  DisableUnlockLabel,
+		cancellationTracker: cancellationTracker,
 	}
 }
 
@@ -29,8 +31,9 @@ type UnlockCommandRunner struct {
 	deleteLockCommand DeleteLockCommand
 	// SilenceNoProjects is whether Atlantis should respond to PRs if no projects
 	// are found
-	SilenceNoProjects  bool
-	DisableUnlockLabel string
+	SilenceNoProjects   bool
+	DisableUnlockLabel  string
+	cancellationTracker CancellationTracker
 }
 
 func (u *UnlockCommandRunner) Run(ctx *command.Context, _ *CommentCommand) {
@@ -59,6 +62,11 @@ func (u *UnlockCommandRunner) Run(ctx *command.Context, _ *CommentCommand) {
 
 	var numLocks int
 	if err == nil && !hasLabel {
+		// Stop running plans first so they cannot write plans or take locks
+		// again after the locks are deleted.
+		if u.cancellationTracker != nil {
+			waitForCancelledRuns(ctx.Log, u.cancellationTracker.Cancel(ctx.Pull, ErrCancelledByUnlock))
+		}
 		numLocks, err = u.deleteLockCommand.DeleteLocksByPull(ctx.Log, baseRepo.FullName, pullNum)
 		if err != nil {
 			vcsMessage = "Failed to delete PR locks"

@@ -6,6 +6,7 @@
 package tfclient
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -395,11 +396,19 @@ func (c *DefaultClient) RunCommandWithVersion(ctx command.ProjectContext, path s
 		return "", err
 	}
 	start := time.Now()
-	out, err := cmd.CombinedOutput()
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	processExited, err := models.StartInterruptible(ctx.Log, ctx.Interrupt, cmd)
+	if err == nil {
+		err = cmd.Wait()
+		processExited()
+	}
+	out := output.Bytes()
 	dur := time.Since(start)
 	log := ctx.Log.With("duration", dur)
 	if err != nil {
-		err = fmt.Errorf("running '%s' in '%s': %w", tfCmd, path, err)
+		err = models.WrapInterrupted(ctx.Interrupt, fmt.Errorf("running '%s' in '%s': %w", tfCmd, path, err))
 		log.Err("%s", err.Error())
 		return ansi.Strip(string(out)), err
 	}

@@ -137,6 +137,7 @@ type projectResultTmplData struct {
 	Rendered     string
 	NoChanges    bool
 	IsSuccessful bool
+	JobURL       string
 }
 
 // Initialize templates
@@ -263,6 +264,7 @@ func (m *MarkdownRenderer) renderProjectResults(ctx *command.Context, results []
 			RepoRelDir:   result.RepoRelDir,
 			ProjectName:  result.ProjectName,
 			IsSuccessful: result.IsSuccessful(),
+			JobURL:       result.JobURL,
 		}
 		if result.PlanSuccess != nil {
 			result.PlanSuccess.TerraformOutput = strings.TrimSpace(result.PlanSuccess.TerraformOutput)

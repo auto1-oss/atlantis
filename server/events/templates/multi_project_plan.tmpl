@@ -5,6 +5,9 @@
 {{ range $i, $result := .Results -}}
 {{ if (and $hideUnchangedPlans $result.NoChanges) }}{{continue}}{{end -}}
 ### {{ add $i 1 }}. {{ if $result.ProjectName }}project: `{{ $result.ProjectName }}` {{ end }}dir: `{{ $result.RepoRelDir }}` workspace: `{{ $result.Workspace }}`
+{{ if $result.JobURL }}:mag: [View full output in Atlantis]({{ $result.JobURL }})
+
+{{ end -}}
 {{ $result.Rendered }}
 
 ---

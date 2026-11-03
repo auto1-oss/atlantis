@@ -4,6 +4,8 @@
 package events
 
 import (
+	"context"
+
 	"github.com/runatlantis/atlantis/server/events/command"
 	"github.com/runatlantis/atlantis/server/events/models"
 )
@@ -63,7 +65,7 @@ func (p *PolicyCheckCommandRunner) Run(ctx *command.Context, cmds []command.Proj
 	var result command.Result
 	if p.isParallelEnabled(cmds) {
 		ctx.Log.Info("Running policy_checks in parallel")
-		result = runProjectCmdsParallel(cmds, p.prjCmdRunner.PolicyCheck, p.parallelPoolSize, nil, ctx.Pull)
+		result = runProjectCmdsParallel(cmds, p.prjCmdRunner.PolicyCheck, p.parallelPoolSize, context.Background())
 	} else {
 		result = runProjectCmds(cmds, p.prjCmdRunner.PolicyCheck)
 	}

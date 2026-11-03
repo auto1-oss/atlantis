@@ -5,13 +5,16 @@
 package events_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/runatlantis/atlantis/server/core/boltdb"
 	"github.com/runatlantis/atlantis/server/core/config/valid"
@@ -65,7 +68,7 @@ var importCommandRunner *events.ImportCommandRunner
 var stateCommandRunner *events.StateCommandRunner
 var preWorkflowHooksCommandRunner events.PreWorkflowHooksCommandRunner
 var postWorkflowHooksCommandRunner events.PostWorkflowHooksCommandRunner
-var cancellationTracker *mocks.MockCancellationTracker
+var cancellationTracker *events.DefaultCancellationTracker
 
 type TestConfig struct {
 	planRunnerWrapper          func(events.ProjectCommandRunner) events.ProjectPlanCommandRunner
@@ -136,7 +139,7 @@ func setup(t *testing.T, options ...func(testConfig *TestConfig)) *vcsmocks.Mock
 	pendingPlanFinder = mocks.NewMockPendingPlanFinder()
 	commitUpdater = mocks.NewMockCommitStatusUpdater()
 	pullReqStatusFetcher = vcsmocks.NewMockPullReqStatusFetcher()
-	cancellationTracker = mocks.NewMockCancellationTracker()
+	cancellationTracker = events.NewCancellationTracker()
 
 	drainer = &events.Drainer{}
 	deleteLockCommand = mocks.NewMockDeleteLockCommand()
@@ -243,6 +246,7 @@ func setup(t *testing.T, options ...func(testConfig *TestConfig)) *vcsmocks.Mock
 		vcsClient,
 		testConfig.SilenceNoProjects,
 		testConfig.DisableUnlockLabel,
+		cancellationTracker,
 	)
 
 	versionCommandRunner := events.NewVersionCommandRunner(
@@ -265,6 +269,7 @@ func setup(t *testing.T, options ...func(testConfig *TestConfig)) *vcsmocks.Mock
 	stateCommandRunner = events.NewStateCommandRunner(
 		pullUpdater,
 		dbUpdater,
+		pullReqStatusFetcher,
 		projectCommandBuilder,
 		projectCommandRunner,
 	)
@@ -429,6 +434,29 @@ func TestRunCommentCommand_ForkPRDisabled(t *testing.T) {
 	commentMessage := fmt.Sprintf("Atlantis commands can't be run on fork pull requests. To enable, set --%s  or, to disable this message, set --%s", ch.AllowForkPRsFlag, ch.SilenceForkPRErrorsFlag)
 	vcsClient.VerifyWasCalledOnce().CreateComment(
 		Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(modelPull.Num), Eq(commentMessage), Eq(""))
+}
+
+func TestStateCommandRunner_RmFetchesPullStatus(t *testing.T) {
+	t.Log("state rm fetches the pull request's approval and mergeable status before building project commands, as import does, so requirement checks see real values")
+	setup(t)
+	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+	cmd := events.CommentCommand{Name: command.State, SubName: "rm"}
+	ctx := &command.Context{
+		User:     testdata.User,
+		Log:      logging.NewNoopLogger(t),
+		Scope:    metricstest.NewLoggingScope(t, logging.NewNoopLogger(t), "atlantis"),
+		Pull:     modelPull,
+		HeadRepo: testdata.GithubRepo,
+		Trigger:  command.CommentTrigger,
+	}
+	expStatus := models.PullReqStatus{ApprovalStatus: models.ApprovalStatus{IsApproved: true}}
+	When(pullReqStatusFetcher.FetchPullStatus(Any[logging.SimpleLogging](), Eq(modelPull))).ThenReturn(expStatus, nil)
+	When(projectCommandBuilder.BuildStateRmCommands(Any[*command.Context](), Any[*events.CommentCommand]())).ThenReturn([]command.ProjectContext{}, nil)
+
+	stateCommandRunner.Run(ctx, &cmd)
+
+	pullReqStatusFetcher.VerifyWasCalledOnce().FetchPullStatus(Any[logging.SimpleLogging](), Eq(modelPull))
+	Equals(t, expStatus, ctx.PullRequestStatus)
 }
 
 func TestRunCommentCommand_ForkPRDisabled_SilenceEnabled(t *testing.T) {
@@ -829,7 +857,7 @@ func TestPlanCommandRunner_HoldsPlanInFlightLockAcrossCleanupPlanAndDBWrite(t *t
 		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected plan lock during command build")
 		return ReturnValues{[]command.ProjectContext{projectCtx}, nil}
 	})
-	When(projectCommandRunner.Plan(projectCtx)).Then(func(args []Param) ReturnValues {
+	When(projectCommandRunner.Plan(planCtx(projectCtx))).Then(func(args []Param) ReturnValues {
 		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected plan lock during project plan")
 		return ReturnValues{command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}}}
 	})
@@ -864,7 +892,7 @@ func TestPlanCommandRunner_HoldsPlanLockDuringStalePlanCleanup(t *testing.T) {
 		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected plan lock during stale plan cleanup")
 		return ReturnValues{[]events.PendingPlan{}, nil}
 	})
-	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
+	When(projectCommandRunner.Plan(planCtx(projectCtx))).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
 
 	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, cmd)
 
@@ -904,7 +932,7 @@ func TestPlanCommandRunner_HoldsPlanLockDuringPullStatusWrite(t *testing.T) {
 	When(projectCommandBuilder.BuildPlanCommands(Any[*command.Context](), Eq(cmd))).ThenReturn([]command.ProjectContext{projectCtx}, nil)
 	When(workingDir.GetPullDir(Any[models.Repo](), Any[models.PullRequest]())).ThenReturn(tmp, nil)
 	When(pendingPlanFinder.Find(tmp)).ThenReturn([]events.PendingPlan{}, nil)
-	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
+	When(projectCommandRunner.Plan(planCtx(projectCtx))).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
 
 	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, cmd)
 
@@ -932,7 +960,7 @@ func TestPlanCommandRunner_AutoplanHoldsPlanLockDuringStalePlanCleanup(t *testin
 		Assert(t, locker.HasCommandLock(testdata.GithubRepo.FullName, testdata.Pull.Num, command.Plan), "expected autoplan lock during stale plan cleanup")
 		return ReturnValues{[]events.PendingPlan{}, nil}
 	})
-	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
+	When(projectCommandRunner.Plan(planCtx(projectCtx))).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
 
 	ch.RunAutoplanCommand(testdata.GithubRepo, testdata.GithubRepo, modelPull, testdata.User)
 
@@ -968,7 +996,7 @@ func TestPlanCommandRunner_AutoplanHoldsPlanLockDuringPullStatusWrite(t *testing
 	When(projectCommandBuilder.BuildAutoplanCommands(Any[*command.Context]())).ThenReturn([]command.ProjectContext{projectCtx}, nil)
 	When(workingDir.GetPullDir(Any[models.Repo](), Any[models.PullRequest]())).ThenReturn(tmp, nil)
 	When(pendingPlanFinder.Find(tmp)).ThenReturn([]events.PendingPlan{}, nil)
-	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
+	When(projectCommandRunner.Plan(planCtx(projectCtx))).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
 
 	ch.RunAutoplanCommand(testdata.GithubRepo, testdata.GithubRepo, modelPull, testdata.User)
 
@@ -1122,6 +1150,7 @@ func TestRunCommentCommand_IgnoredTargetedDirValidatesPullBeforeIgnoreCheck(t *t
 			headRepo: models.Repo{
 				Owner:    "forkrepo",
 				FullName: "forkrepo/atlantis",
+				VCSHost:  testdata.GithubRepo.VCSHost,
 			},
 			wantComment: fmt.Sprintf("Atlantis commands can't be run on fork pull requests. To enable, set --%s  or, to disable this message, set --%s", "allow-fork-prs-flag", ""),
 		},
@@ -1223,13 +1252,13 @@ func TestRunCommentCommand_IgnoredTargetedDirPreHooksCanGenerateExplicitConfig(t
 		return ReturnValues{ignoreChecks == 1}
 	})
 	When(projectCommandBuilder.BuildPlanCommands(Any[*command.Context](), Eq(cmd))).ThenReturn([]command.ProjectContext{projectCtx}, nil)
-	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
+	When(projectCommandRunner.Plan(planCtx(projectCtx))).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
 
 	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, cmd)
 
 	Equals(t, 1, configuredPreHooks.calls)
 	projectCommandBuilder.VerifyWasCalledOnce().BuildPlanCommands(Any[*command.Context](), Eq(cmd))
-	projectCommandRunner.VerifyWasCalledOnce().Plan(projectCtx)
+	projectCommandRunner.VerifyWasCalledOnce().Plan(planCtx(projectCtx))
 }
 
 func TestRunCommentCommand_IgnoredTargetedDirNonFatalPreHookErrorCanGenerateExplicitConfig(t *testing.T) {
@@ -1256,14 +1285,14 @@ func TestRunCommentCommand_IgnoredTargetedDirNonFatalPreHookErrorCanGenerateExpl
 		return ReturnValues{ignoreChecks == 1}
 	})
 	When(projectCommandBuilder.BuildPlanCommands(Any[*command.Context](), Eq(cmd))).ThenReturn([]command.ProjectContext{projectCtx}, nil)
-	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
+	When(projectCommandRunner.Plan(planCtx(projectCtx))).ThenReturn(command.ProjectCommandOutput{PlanSuccess: &models.PlanSuccess{}})
 
 	ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, cmd)
 
 	Equals(t, 1, configuredPreHooks.calls)
 	Equals(t, 2, ignoreChecks)
 	projectCommandBuilder.VerifyWasCalledOnce().BuildPlanCommands(Any[*command.Context](), Eq(cmd))
-	projectCommandRunner.VerifyWasCalledOnce().Plan(projectCtx)
+	projectCommandRunner.VerifyWasCalledOnce().Plan(planCtx(projectCtx))
 }
 
 func TestRunCommentCommandApprovePolicy_NoProjects_SilenceEnabled(t *testing.T) {
@@ -2089,6 +2118,33 @@ func TestRunUnlockCommand_VCSComment(t *testing.T) {
 	}
 }
 
+func TestRunUnlockCommand_CancelsRunningPlanBeforeDeletingLocks(t *testing.T) {
+	setup(t)
+	pull := &github.PullRequest{State: github.Ptr("open")}
+	modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+	When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo),
+		Eq(testdata.Pull.Num))).ThenReturn(pull, nil)
+	When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(pull))).ThenReturn(modelPull, modelPull.BaseRepo,
+		testdata.GithubRepo, nil)
+
+	runCtx, endRun, _ := cancellationTracker.Start(modelPull, command.Plan)
+	var planEnded atomic.Bool
+	go func() {
+		<-runCtx.Done()
+		time.Sleep(100 * time.Millisecond)
+		planEnded.Store(true)
+		endRun()
+	}()
+
+	ch.RunCommentCommand(testdata.GithubRepo, &testdata.GithubRepo, nil, testdata.User, testdata.Pull.Num,
+		&events.CommentCommand{Name: command.Unlock})
+
+	Assert(t, errors.Is(context.Cause(runCtx), events.ErrCancelledByUnlock), "expected running plan to be cancelled by unlock")
+	Assert(t, planEnded.Load(), "locks were deleted before the running plan ended")
+	deleteLockCommand.VerifyWasCalledOnce().DeleteLocksByPull(Any[logging.SimpleLogging](),
+		Eq(testdata.GithubRepo.FullName), Eq(testdata.Pull.Num))
+}
+
 func TestRunUnlockCommandFail_VCSComment(t *testing.T) {
 	t.Log("if unlock PR command is run and delete fails, atlantis should" +
 		" invoke comment on PR with error message")
@@ -2477,7 +2533,7 @@ func TestRunGenericPlanCommand_DeletePlans(t *testing.T) {
 	}
 	When(projectCommandBuilder.BuildPlanCommands(Any[*command.Context](), Any[*events.CommentCommand]())).
 		ThenReturn([]command.ProjectContext{projectCtx}, nil)
-	When(projectCommandRunner.Plan(projectCtx)).ThenReturn(command.ProjectCommandOutput{
+	When(projectCommandRunner.Plan(planCtx(projectCtx))).ThenReturn(command.ProjectCommandOutput{
 		PlanSuccess: &models.PlanSuccess{
 			TerraformOutput: "true",
 		},
@@ -2854,4 +2910,111 @@ func TestRunAutoplanCommand_DrainNotOngoing(t *testing.T) {
 	ch.RunAutoplanCommand(testdata.GithubRepo, testdata.GithubRepo, testdata.Pull, testdata.User)
 	projectCommandBuilder.VerifyWasCalledOnce().BuildAutoplanCommands(Any[*command.Context]())
 	Equals(t, 0, drainer.GetStatus().InProgressOps)
+}
+
+// headRepoHostCases returns head repos paired with whether a command run
+// against the base repo testdata.GithubRepo should be allowed to proceed.
+func headRepoHostCases(t *testing.T) []struct {
+	name     string
+	headRepo models.Repo
+	allowed  bool
+} {
+	t.Helper()
+	caseVariant := testdata.GithubRepo
+	caseVariant.VCSHost.Hostname = "GitHub.com"
+
+	forged := testdata.GithubRepo
+	forged.VCSHost.Hostname = "192.168.16.1:8001"
+
+	fileURLHead, err := models.NewRepo(models.Github, testdata.GithubRepo.FullName,
+		fmt.Sprintf("file:///%s.git", testdata.GithubRepo.FullName), "", "", "")
+	Ok(t, err)
+	Equals(t, "", fileURLHead.VCSHost.Hostname)
+
+	barePathHead, err := models.NewRepo(models.Github, testdata.GithubRepo.FullName,
+		fmt.Sprintf("/%s.git", testdata.GithubRepo.FullName), "", "", "")
+	Ok(t, err)
+	Equals(t, "", barePathHead.VCSHost.Hostname)
+
+	return []struct {
+		name     string
+		headRepo models.Repo
+		allowed  bool
+	}{
+		{name: "same host", headRepo: testdata.GithubRepo, allowed: true},
+		{name: "case variant host", headRepo: caseVariant, allowed: true},
+		{name: "forged host", headRepo: forged, allowed: false},
+		{name: "empty host from file url", headRepo: fileURLHead, allowed: false},
+		{name: "empty host from bare path", headRepo: barePathHead, allowed: false},
+	}
+}
+
+func verifyPreHooksRan(t *testing.T, allowed bool) {
+	t.Helper()
+	hooks := preWorkflowHooksCommandRunner.(*mocks.MockPreWorkflowHooksCommandRunner)
+	if allowed {
+		hooks.VerifyWasCalledOnce().RunPreHooks(Any[*command.Context](), Any[*events.CommentCommand]())
+		return
+	}
+	hooks.VerifyWasCalled(Never()).RunPreHooks(Any[*command.Context](), Any[*events.CommentCommand]())
+}
+
+func TestRunAutoplanCommand_HeadRepoHostMustMatchBase(t *testing.T) {
+	for _, c := range headRepoHostCases(t) {
+		t.Run(c.name, func(t *testing.T) {
+			setup(t)
+			tmp := t.TempDir()
+			When(workingDir.GetPullDir(Any[models.Repo](), Any[models.PullRequest]())).ThenReturn(tmp, nil)
+
+			pull := testdata.Pull
+			pull.BaseRepo = testdata.GithubRepo
+			pull.State = models.OpenPullState
+
+			ch.RunAutoplanCommand(testdata.GithubRepo, c.headRepo, pull, testdata.User)
+
+			verifyPreHooksRan(t, c.allowed)
+		})
+	}
+}
+
+func TestRunCommentCommand_HeadRepoHostMustMatchBase(t *testing.T) {
+	for _, c := range headRepoHostCases(t) {
+		t.Run(c.name, func(t *testing.T) {
+			setup(t)
+			var pull github.PullRequest
+			modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+			When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))).ThenReturn(&pull, nil)
+			When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(&pull))).ThenReturn(modelPull, modelPull.BaseRepo, c.headRepo, nil)
+
+			ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, &events.CommentCommand{Name: command.Plan})
+
+			verifyPreHooksRan(t, c.allowed)
+		})
+	}
+}
+
+func TestRunCommentCommand_VarFileOutsideAllowlistRejectedForEveryCommand(t *testing.T) {
+	t.Log("a var file outside the allowlist is rejected whichever command carries it, not only plan")
+	for _, name := range []command.Name{command.Plan, command.Apply, command.Import, command.State} {
+		t.Run(name.String(), func(t *testing.T) {
+			vcsClient := setup(t)
+			checker, err := events.NewVarFileAllowlistChecker("")
+			Ok(t, err)
+			ch.VarFileAllowlistChecker = checker
+			var pull github.PullRequest
+			modelPull := models.PullRequest{BaseRepo: testdata.GithubRepo, State: models.OpenPullState, Num: testdata.Pull.Num}
+			When(githubGetter.GetPullRequest(Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(testdata.Pull.Num))).ThenReturn(&pull, nil)
+			When(eventParsing.ParseGithubPull(Any[logging.SimpleLogging](), Eq(&pull))).ThenReturn(modelPull, modelPull.BaseRepo, testdata.GithubRepo, nil)
+
+			cmd := &events.CommentCommand{Name: name, Flags: []string{"-var-file=/etc/passwd"}}
+			if name == command.State {
+				cmd.SubName = "rm"
+			}
+			ch.RunCommentCommand(testdata.GithubRepo, nil, nil, testdata.User, testdata.Pull.Num, cmd)
+
+			vcsClient.VerifyWasCalledOnce().CreateComment(
+				Any[logging.SimpleLogging](), Eq(testdata.GithubRepo), Eq(modelPull.Num),
+				Eq("```\nvar file path /etc/passwd is not allowed by the current allowlist: []\n```"), Eq(""))
+		})
+	}
 }

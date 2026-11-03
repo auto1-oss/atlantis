@@ -4,6 +4,7 @@
 package command
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -76,6 +77,9 @@ type ProjectContext struct {
 	// interpolated into a shell command or exported to one, such as the
 	// COMMENT_ARGS variable available to `run` steps and workflow hooks.
 	EscapedCommentArgs []string
+	// Interrupt, when set, is cancelled to stop this project's running
+	// processes. Its cause says why.
+	Interrupt context.Context
 	// HeadRepo is the repository that is getting merged into the BaseRepo.
 	// If the pull request branch is from the same repository then HeadRepo will
 	// be the same as BaseRepo.

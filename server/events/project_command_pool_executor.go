@@ -4,13 +4,16 @@
 package events
 
 import (
+	"context"
 	"fmt"
+	"runtime/debug"
+	"slices"
 	"sort"
 	"sync"
 
 	"github.com/remeh/sizedwaitgroup"
 	"github.com/runatlantis/atlantis/server/events/command"
-	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/logging"
 )
 
 type prjCmdRunnerFunc func(ctx command.ProjectContext) command.ProjectCommandOutput
@@ -36,8 +39,7 @@ func runProjectCmdsParallel(
 	cmds []command.ProjectContext,
 	runnerFunc prjCmdRunnerFunc,
 	poolSize int,
-	cancellationTracker CancellationTracker,
-	pull models.PullRequest,
+	runCtx context.Context,
 ) command.Result {
 	var results []command.ProjectResult
 	mux := &sync.Mutex{}
@@ -46,14 +48,14 @@ func runProjectCmdsParallel(
 	cancelledAt := -1
 
 	for i, pCmd := range cmds {
-		if cancellationTracker != nil && cancellationTracker.IsCancelled(pull) {
+		if runCtx.Err() != nil {
 			cancelledAt = i
 			break
 		}
 
 		wg.Add()
 
-		if cancellationTracker != nil && cancellationTracker.IsCancelled(pull) {
+		if runCtx.Err() != nil {
 			// because wg.Add() is a blocking call, we check for cancellation again after it returns
 			// to avoid waiting for another goroutine to finish before we can exit early.
 			// see used sizedwaitgroup package:
@@ -77,20 +79,69 @@ func runProjectCmdsParallel(
 	wg.Wait()
 
 	if cancelledAt != -1 {
-		for _, pCmd := range cmds[cancelledAt:] {
-			results = append(results, command.ProjectResult{
-				Command: pCmd.CommandName,
-				ProjectCommandOutput: command.ProjectCommandOutput{
-					Error: fmt.Errorf("operation cancelled via `atlantis cancel` command"),
-				},
-				RepoRelDir:  pCmd.RepoRelDir,
-				Workspace:   pCmd.Workspace,
-				ProjectName: pCmd.ProjectName,
-			})
-		}
+		results = append(results, createCancelledResults([][]command.ProjectContext{cmds[cancelledAt:]}, runCause(runCtx))...)
 	}
 
 	return command.Result{ProjectResults: results}
+}
+
+// RunProjectCmdsParallelInOrder runs up to poolSize cmds at once. A cmd starts
+// only after every earlier cmd from a different execution order group has
+// finished, and every cmd gets a result, returned in cmds order.
+//
+// Like the PR path, it stops running groups once a group with
+// AbortOnExecutionOrderFail set has an error. The cmds that did not run get an
+// errored result, so callers still see one result per cmd. A panic in a runner
+// becomes an errored result for that cmd instead of crashing the server.
+func RunProjectCmdsParallelInOrder(
+	log logging.SimpleLogging,
+	cmds []command.ProjectContext,
+	runnerFunc prjCmdRunnerFunc,
+	poolSize int,
+) command.Result {
+	results := make([]command.ProjectResult, len(cmds))
+	wg := sizedwaitgroup.New(poolSize)
+	groupStart := 0
+	aborted := false
+	for i, cmd := range cmds {
+		if i > 0 && cmd.ExecutionOrderGroup != cmds[i-1].ExecutionOrderGroup {
+			wg.Wait()
+			if !aborted && cmds[i-1].AbortOnExecutionOrderFail && (command.Result{ProjectResults: results[groupStart:i]}).HasErrors() {
+				log.Info("abort on execution order when failed")
+				aborted = true
+			}
+			groupStart = i
+		}
+		if aborted {
+			results[i] = errorProjectResult(cmd, fmt.Errorf("skipped because an earlier execution order group failed"))
+			continue
+		}
+		wg.Add()
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Err("panic running %s for project %q (dir %q, workspace %q): %v\n%s", cmd.CommandName, cmd.ProjectName, cmd.RepoRelDir, cmd.Workspace, r, debug.Stack())
+					results[i] = errorProjectResult(cmd, fmt.Errorf("panic: %v", r))
+				}
+			}()
+			results[i] = RunOneProjectCmd(runnerFunc, cmd)
+		}()
+	}
+	wg.Wait()
+	return command.Result{ProjectResults: results}
+}
+
+func errorProjectResult(cmd command.ProjectContext, err error) command.ProjectResult {
+	return command.ProjectResult{
+		ProjectCommandOutput: command.ProjectCommandOutput{Error: err},
+		Command:              cmd.CommandName,
+		SubCommand:           cmd.SubCommand,
+		RepoRelDir:           cmd.RepoRelDir,
+		Workspace:            cmd.Workspace,
+		ProjectName:          cmd.ProjectName,
+		SilencePRComments:    cmd.SilencePRComments,
+	}
 }
 
 func runProjectCmds(
@@ -130,12 +181,11 @@ func runProjectCmdsParallelGroups(
 	cmds []command.ProjectContext,
 	runnerFunc prjCmdRunnerFunc,
 	poolSize int,
-	cancellationTracker CancellationTracker,
 ) command.Result {
 	var results []command.ProjectResult
 	groups := splitByExecutionOrderGroup(cmds)
 	for _, group := range groups {
-		res := runProjectCmdsParallel(group, runnerFunc, poolSize, cancellationTracker, ctx.Pull)
+		res := runProjectCmdsParallel(group, runnerFunc, poolSize, context.Background())
 		results = append(results, res.ProjectResults...)
 		if res.HasErrors() && group[0].AbortOnExecutionOrderFail {
 			ctx.Log.Info("abort on execution order when failed")
@@ -146,10 +196,13 @@ func runProjectCmdsParallelGroups(
 	return command.Result{ProjectResults: results}
 }
 
-func runProjectCmdsWithCancellationTracker(
+// runProjectCmdsWithCancellation runs projectCmds until runCtx is cancelled.
+// Projects that have not started by then are reported as cancelled, and
+// running plan projects have their processes interrupted.
+func runProjectCmdsWithCancellation(
 	ctx *command.Context,
+	runCtx context.Context,
 	projectCmds []command.ProjectContext,
-	cancellationTracker CancellationTracker,
 	parallelPoolSize int,
 	isParallel bool,
 	runnerFunc prjCmdRunnerFunc,
@@ -158,22 +211,25 @@ func runProjectCmdsWithCancellationTracker(
 		ctx.Log.Info("Running commands in parallel")
 	}
 
-	groups := prepareExecutionGroups(projectCmds, isParallel)
-	if cancellationTracker != nil {
-		defer cancellationTracker.Clear(ctx.Pull)
+	projectCmds = slices.Clone(projectCmds)
+	for i := range projectCmds {
+		if projectCmds[i].CommandName == command.Plan {
+			projectCmds[i].Interrupt = runCtx
+		}
 	}
+	groups := prepareExecutionGroups(projectCmds, isParallel)
 
 	var results []command.ProjectResult
 	for i, group := range groups {
-		if i > 0 && cancellationTracker != nil && cancellationTracker.IsCancelled(ctx.Pull) {
-			ctx.Log.Info("Skipping execution order group %d and all subsequent groups due to cancellation", group[0].ExecutionOrderGroup)
-			results = append(results, createCancelledResults(groups[i:])...)
+		if cause := runCause(runCtx); cause != nil {
+			ctx.Log.Info("skipping execution order group %d and all subsequent groups due to cancellation, %s", group[0].ExecutionOrderGroup, cause)
+			results = append(results, createCancelledResults(groups[i:], cause)...)
 			break
 		}
 
 		var groupResult command.Result
 		if isParallel && len(group) > 1 {
-			groupResult = runProjectCmdsParallel(group, runnerFunc, parallelPoolSize, cancellationTracker, ctx.Pull)
+			groupResult = runProjectCmdsParallel(group, runnerFunc, parallelPoolSize, runCtx)
 		} else {
 			groupResult = runProjectCmds(group, runnerFunc)
 		}
@@ -220,14 +276,14 @@ func createIndividualCommandGroups(projectCmds []command.ProjectContext) [][]com
 	return groups
 }
 
-func createCancelledResults(remainingGroups [][]command.ProjectContext) []command.ProjectResult {
+func createCancelledResults(remainingGroups [][]command.ProjectContext, cause error) []command.ProjectResult {
 	var cancelledResults []command.ProjectResult
 	for _, group := range remainingGroups {
 		for _, cmd := range group {
 			cancelledResults = append(cancelledResults, command.ProjectResult{
 				Command: cmd.CommandName,
 				ProjectCommandOutput: command.ProjectCommandOutput{
-					Error: fmt.Errorf("operation cancelled via `atlantis cancel` command"),
+					Error: cause,
 				},
 				RepoRelDir:  cmd.RepoRelDir,
 				Workspace:   cmd.Workspace,

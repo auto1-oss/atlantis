@@ -8,8 +8,8 @@ import (
 	"github.com/runatlantis/atlantis/server/events/vcs"
 )
 
-const cancelComment = "Cancelled all queued operations and released working directory locks for this pull request.\n" +
-	"New operations can now be started. Currently running operations will continue to completion."
+const cancelComment = "Cancelled all queued operations, interrupted running plans and released working directory locks for this pull request.\n" +
+	"New operations can now be started. Running applies continue to completion."
 
 func NewCancelCommandRunner(
 	vcsClient vcs.Client,
@@ -53,8 +53,8 @@ func (c *CancelCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
 		return
 	}
 
-	// Cancel the entire pull request to prevent future execution order groups from running
-	defaultRunner.CancellationTracker.Cancel(ctx.Pull)
+	ctx.Log.Info("cancelling queued operations and running plans")
+	waitForCancelledRuns(ctx.Log, defaultRunner.CancellationTracker.Cancel(ctx.Pull, ErrCancelledByCommand))
 
 	// Clean up working directory locks for this pull request
 	if defaultRunner.WorkingDirLocker != nil {
@@ -62,7 +62,7 @@ func (c *CancelCommandRunner) Run(ctx *command.Context, cmd *CommentCommand) {
 		ctx.Log.Debug("Released working directory locks for pull request")
 	}
 
-	ctx.Log.Info("Cancelled all queued operations and future execution groups for pull request; currently running operations will continue to completion")
+	ctx.Log.Info("cancelled queued operations and running plans")
 	if err := c.VCSClient.CreateComment(ctx.Log, ctx.Pull.BaseRepo, ctx.Pull.Num, cancelComment, ""); err != nil {
 		ctx.Log.Err("unable to comment: %s", err)
 	}

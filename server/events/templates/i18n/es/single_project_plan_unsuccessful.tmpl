@@ -2,6 +2,9 @@
 {{ $result := index .Results 0 -}}
 Se ejecutó {{ .Command }} para directorio: `{{ $result.RepoRelDir }}` espacio de trabajo: `{{ $result.Workspace }}`
 
+{{ if $result.JobURL }}:mag: [Ver la salida completa en Atlantis]({{ $result.JobURL }})
+
+{{ end -}}
 {{ $result.Rendered }}
 {{ template "log" . -}}
 {{ end -}}

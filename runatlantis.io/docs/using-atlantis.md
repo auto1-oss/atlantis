@@ -53,6 +53,10 @@ atlantis plan [options] -- [terraform plan flags]
 Runs `terraform plan` on the pull request's branch. You may wish to re-run plan after Atlantis has already done
 so if you've changed some resources manually.
 
+Each project in the plan comment links to its job page in the Atlantis UI, which shows the full, unformatted
+output and is easy to share. Job output is kept in memory until the pull request is closed, so the link stops
+working once the pull request is closed or the Atlantis server restarts.
+
 ### Examples
 
 ```bash
@@ -91,6 +95,12 @@ you can append them to the end of the comment after `--`, ex.
 ```shell
 atlantis plan -d dir -- -var foo='bar'
 ```
+
+Flags that change where Terraform runs or writes files are not allowed after `--`: `-chdir`, `-plugin-dir`, `-out`, `-generate-config-out`, `-state`, `-state-out` and `-backup`, in any spelling, plus any flags listed in [--blocked-extra-args](server-configuration.md#blocked-extra-args). `-var-file` paths must be inside the repository or in a directory listed in [--var-file-allowlist](server-configuration.md#var-file-allowlist). The same rules apply to `apply`, `import` and `state rm`.
+
+::: warning Behavior change
+Previously, `atlantis plan -- -generate-config-out=FILE` could be used to generate configuration for `import` blocks. Now `-generate-config-out` is blocked in comments and fails with `flag "-generate-config-out=FILE" is not allowed in extra args`. Ask your Atlantis operator for a server-side workflow whose `plan` step sets `-generate-config-out` in `extra_args`.
+:::
 
 If you always need to append a certain flag, see [Custom Workflow Use Cases](custom-workflows.md#adding-extra-arguments-to-terraform-commands).
 
@@ -207,17 +217,23 @@ atlantis cancel
 
 ### Explanation
 
-Cancels all **queued commands** for the current pull request.
+Cancels all **queued commands** for the current pull request and interrupts **running plans**.
+
+Running plans, including their custom `run` steps, receive `SIGINT`, the signal Terraform handles as Ctrl+C: it stops gracefully and releases the state lock. A process that is still running a minute later is killed. Atlantis waits for the interrupted plans to exit before it replies.
 
 ::: warning NOTE
-This command **does not** attempt to stop or interrupt commands that are already running. It only removes subsequent commands that are waiting in the queue. There is currently no mechanism in Atlantis to interrupt the currently running process.
+Running applies are **not** interrupted, because stopping an apply part way through leaves infrastructure partially changed. Only applies that are still queued are cancelled.
 :::
 
-This is useful if you have multiple commands queued (e.g., atlantis apply for several projects) and you realize you made a mistake in your PR. Using cancel prevents the queued plans from executing. Especially with long-running operations, this can save time and resources.
+This is useful if you have multiple commands queued (e.g., atlantis apply for several projects) and you realize you made a mistake in your PR. Especially with long-running operations, this can save time and resources.
 
 ### Examples
 
 ```bash
+# A plan for many projects is running.
+# This command interrupts the running projects and cancels the queued ones.
+atlantis cancel
+
 # An apply is currently running, and another is queued.
 # This command will cancel the queued apply but not the running one.
 atlantis cancel
@@ -289,6 +305,7 @@ atlantis state [options] rm ADDRESS... -- [terraform state rm flags]
 
 Runs `terraform state rm` that matches the directory/project/workspace.
 This command discards the terraform plan result. After running `state rm` and before an apply, another `atlantis plan` must be run again.
+Because it changes state without a reviewed plan, `state rm` must satisfy both the project's `apply_requirements` and `import_requirements` (see [Command Requirements](command-requirements.md)).
 
 To allow the `state` command requires [--allow-commands](server-configuration.md#allow-commands) configuration.
 
@@ -343,6 +360,8 @@ atlantis unlock
 
 Removes all atlantis locks and discards all plans for this PR.
 To unlock a specific plan you can use the Atlantis UI.
+
+Plans that are still running for this PR are interrupted first, the same way as with [`atlantis cancel`](#atlantis-cancel), so that they cannot write a plan or take a lock again after the unlock.
 
 ---
 
