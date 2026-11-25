@@ -191,7 +191,7 @@ ENV GCOMPAT_VERSION="1.1.0-r4"
 # renovate: datasource=apk depName=coreutils-env
 ENV COREUTILS_ENV_VERSION="9.11-r0"
 # renovate: datasource=apk depName=python3
-ENV PYTHON3_VERSION="3.14.10-r1"
+ENV PYTHON3_VERSION="3.14.10-r2"
 # renovate: datasource=apk depName=py3-yaml
 ENV PY3_YAML_VERSION="6.0.3-r2"
 # renovate: datasource=apk depName=py3-jinja2
